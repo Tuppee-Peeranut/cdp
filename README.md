@@ -1,8 +1,8 @@
-# dBulk
+# dP
 
-dBulk - Native AI Bulk Payment Platform.
+dP - Native AI Customer Data Platform.
 
-ChatGPT-style web app for **Bulk Credit/Debit Transfers** with Excel/CSV upload, local validation rules, chat-based Q&A, and a simulated submit.
+ChatGPT-style web app for **Customers** and **Products** with Excel/CSV upload, local validation rules, chat-based Q&A, and a simulated submit.
 
 > ⚠️ This MVP calls OpenAI from the browser using your key (BYOK). For production, proxy all OpenAI requests via your server to avoid exposing secrets.
 

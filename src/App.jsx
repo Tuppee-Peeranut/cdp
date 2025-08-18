@@ -6,8 +6,8 @@ import {
   Play,
   Settings as SettingsIcon,
   History as HistoryIcon,
-  CreditCard,
-  Banknote,
+  Users,
+  Package,
   FileUp,
   CheckCircle,
   XCircle,
@@ -22,7 +22,7 @@ import {
 import * as XLSX from "xlsx";
 
 /**
- * dBulk Platform — v2 (multi-rule engine)
+ * dP Platform — v2 (multi-rule engine)
  * - Multiple validation rule sets
  * - Each rule has on/off status and applies to Credit or Debit
  * - On upload, auto-validates against all enabled rules for the active transfer kind
@@ -282,7 +282,7 @@ function validateWithRules(rows, rulesets, kind) {
 
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
 async function askOpenAI(apiKey, model, userPrompt, context) {
-  const sys = `You are dBulk Copilot, a careful payments operations assistant.
+  const sys = `You are dP Copilot, a careful data platform assistant.
 - Explain validations and suggest fixes succinctly.
 - Never fabricate banking details.
 - If asked to "submit", remind that this MVP only simulates submission.`;
@@ -314,7 +314,7 @@ function SidebarButton({ icon: Icon, label, active, onClick }) {
     <button
       onClick={onClick}
       className={`flex items-center gap-2 px-3 py-2 rounded-xl w-full text-left transition ${
-        active ? "bg-neutral-800 text-white" : "text-neutral-300 hover:bg-neutral-800/60"
+        active ? "bg-emerald-200 text-emerald-800" : "text-neutral-700 hover:bg-emerald-50"
       }`}
     >
       <Icon size={18} />
@@ -331,7 +331,7 @@ function Badge({ children, tone = "neutral" }) {
       ? "bg-rose-500/15 text-rose-400 border-rose-500/30"
       : tone === "warn"
       ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-      : "bg-neutral-700 text-neutral-300 border-neutral-600";
+      : "bg-neutral-200 text-neutral-700 border-neutral-400";
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs border ${toneCls}`}>
       {children}
@@ -344,7 +344,7 @@ function Toggle({ checked, onChange }) {
     <button
       onClick={() => onChange(!checked)}
       className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border ${
-        checked ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-neutral-600 bg-neutral-800 text-neutral-300"
+        checked ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-neutral-400 bg-neutral-200 text-neutral-700"
       }`}
     >
       {checked ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
@@ -356,16 +356,16 @@ function Toggle({ checked, onChange }) {
 function MessageBubble({ msg, rulesets, setRulesets, kind }) {
   const isUser = msg.role === "user";
   const bubbleCls = isUser
-    ? "bg-neutral-800 text-neutral-50"
+    ? "bg-neutral-200 text-neutral-900"
     : msg.type === "validation"
-    ? "bg-neutral-900 text-neutral-200 border border-neutral-700"
-    : "bg-neutral-900 text-neutral-200";
+    ? "bg-neutral-100 text-neutral-800 border border-neutral-300"
+    : "bg-neutral-100 text-neutral-800";
 
   return (
     <div className={`w-full flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div className={`max-w-[86%] rounded-2xl px-4 py-3 ${bubbleCls}`}>
         {msg.type === "file" && (
-          <div className="flex items-center gap-2 mb-2 text-neutral-300">
+          <div className="flex items-center gap-2 mb-2 text-neutral-700">
             <FileUp size={16} /> <span className="text-sm">{msg.content}</span>
           </div>
         )}
@@ -410,7 +410,7 @@ function ValidationPanel({ payload, rulesets = [], setRulesets, kind }) {
         const errCount = rr ? rr.issues.filter((i) => i.level === "error").length : 0;
         const warnCount = rr ? rr.issues.filter((i) => i.level === "warning").length : 0;
         return (
-          <div key={r.id} className="rounded-lg border border-neutral-700 p-3 bg-neutral-950/40">
+          <div key={r.id} className="rounded-lg border border-neutral-300 p-3 bg-neutral-50">
             <div className="flex items-center justify-between mb-2">
               <div className="text-sm font-medium">{r.name}</div>
               <Toggle checked={r.enabled} onChange={(v) => toggleRule(r.id, v)} />
@@ -419,13 +419,13 @@ function ValidationPanel({ payload, rulesets = [], setRulesets, kind }) {
               rr && rr.issues.length > 0 ? (
                 <ul className="space-y-1 max-h-36 overflow-auto pr-1">
                   {rr.issues.slice(0, 20).map((it, idx) => (
-                    <li key={idx} className="text-xs text-neutral-300">
+                    <li key={idx} className="text-xs text-neutral-700">
                       <span className="text-neutral-500 mr-1">Row {it.rowIndex}:</span>
                       <span className={it.level === "error" ? "text-rose-300" : "text-amber-300"}>{it.message}</span>
                     </li>
                   ))}
                   {rr.issues.length > 20 && (
-                    <li className="text-xs text-neutral-400">…and {rr.issues.length - 20} more</li>
+                    <li className="text-xs text-neutral-600">…and {rr.issues.length - 20} more</li>
                   )}
                 </ul>
               ) : (
@@ -470,99 +470,25 @@ export default function App() {
   });
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(STORAGE_KEYS.apiKey) || "");
   const [model, setModel] = useState(() => localStorage.getItem(STORAGE_KEYS.model) || MODELS[0]);
-  const [active, setActive] = useState("credit"); // "credit" | "debit" | "rules" | "settings"
+  const [domains, setDomains] = useState([
+    { id: "customers", label: "Customers", icon: Users },
+    { id: "products", label: "Products", icon: Package },
+  ]);
+  const [active, setActive] = useState("customers"); // active view
+  const [toasts, setToasts] = useState([]);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.rulesets, JSON.stringify(rulesets));
-  }, [rulesets]);
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks));
-  }, [tasks]);
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.apiKey, apiKey || "");
-  }, [apiKey]);
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.model, model || "");
-  }, [model]);
+  const addToast = (msg) => {
+    const id = uid("toast");
+    setToasts((ts) => [...ts, { id, msg }]);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
+  };
 
-  return (
-    <div className="h-full w-full min-h-screen bg-neutral-950 text-neutral-100">
-      {/* Top Bar */}
-      <div className="h-12 border-b border-neutral-800 flex items-center justify-between px-4 sticky top-0 bg-neutral-950/80 backdrop-blur z-40">
-        <div className="flex items-center gap-3">
-          <div className="size-6 rounded-lg bg-neutral-800 grid place-items-center">
-            <Zap size={14} className="text-neutral-300" />
-          </div>
-          <div className="font-semibold">dBulk</div>
-          <Badge tone="neutral">MVP</Badge>
-        </div>
-        <div className="text-xs text-neutral-400">dBulk - Native AI Bulk Payment Platform</div>
-      </div>
+  const addDomain = () => {
+    const id = uid("domain");
+    setDomains((d) => [...d, { id, label: `Domain ${d.length + 1}`, icon: Package }]);
+    addToast("Domain added");
+  };
 
-      {/* Body */}
-      <div className="flex">
-        {/* Sidebar */}
-        <aside className="w-[260px] border-r border-neutral-800 min-h-[calc(100vh-3rem)] p-3 hidden md:block">
-          <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mb-2">Transfers</div>
-          <div className="space-y-1">
-            <SidebarButton icon={CreditCard} label="Bulk Credit Transfer" active={active === "credit"} onClick={() => setActive("credit")} />
-            <SidebarButton icon={Banknote} label="Bulk Debit Transfer" active={active === "debit"} onClick={() => setActive("debit")} />
-          </div>
-          <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">Configure</div>
-          <div className="space-y-1">
-            <SidebarButton icon={HelpCircle} label="Validation Rules" active={active === "rules"} onClick={() => setActive("rules")} />
-            <SidebarButton icon={SettingsIcon} label="Settings" active={active === "settings"} onClick={() => setActive("settings")} />
-          </div>
-          <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">Recent Tasks</div>
-          <TaskMini tasks={tasks} />
-        </aside>
-
-        {/* Main */}
-        <main className="flex-1 min-h-[calc(100vh-3rem)]">
-          {active === "rules" ? (
-            <RulesManager rulesets={rulesets} setRulesets={setRulesets} />
-          ) : active === "settings" ? (
-            <SettingsPanel apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} />
-          ) : (
-            <TransferChat
-              kind={active === "credit" ? "credit" : "debit"}
-              rulesets={rulesets}
-              setRulesets={setRulesets}
-              tasks={tasks}
-              setTasks={setTasks}
-              apiKey={apiKey}
-              model={model}
-            />
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-// ----------------------- Panels -----------------------------
-function TaskMini({ tasks }) {
-  return (
-    <div className="space-y-1 max-h-[42vh] overflow-auto pr-1">
-      {tasks.slice(0, 12).map((t) => (
-        <div key={t.id} className="w-full text-left px-2 py-2 rounded-lg hover:bg-neutral-800/60">
-          <div className="flex items-center gap-2 text-sm">
-            {t.kind === "credit" ? <CreditCard size={14} className="text-neutral-400" /> : <Banknote size={14} className="text-neutral-400" />}
-            <span className="truncate">{t.fileName}</span>
-          </div>
-          <div className="text-[11px] text-neutral-500 flex items-center gap-2">
-            <Badge tone={t.status === "completed" ? "success" : t.status === "failed" ? "danger" : t.status === "initiated" ? "neutral" : "warn"}>{t.status}</Badge>
-            <span>{new Date(t.createdAt).toLocaleString()}</span>
-          </div>
-        </div>
-      ))}
-      {tasks.length === 0 && <div className="text-xs text-neutral-600 px-2 py-4">No tasks yet</div>}
-    </div>
-  );
-}
-
-function RulesManager({ rulesets, setRulesets }) {
-  // Helpers
   const addRule = () => {
     setRulesets((rs) => [
       {
@@ -580,8 +506,118 @@ function RulesManager({ rulesets, setRulesets }) {
       },
       ...rs,
     ]);
+    addToast("Rule added");
   };
 
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.rulesets, JSON.stringify(rulesets));
+  }, [rulesets]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks));
+  }, [tasks]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.apiKey, apiKey || "");
+  }, [apiKey]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.model, model || "");
+  }, [model]);
+
+  return (
+    <div className="h-full w-full min-h-screen bg-white text-neutral-900">
+      {/* Top Bar */}
+      <div className="h-12 border-b border-neutral-200 flex items-center justify-between px-4 sticky top-0 bg-white/80 backdrop-blur z-40">
+        <div className="flex items-center gap-3">
+          <div className="size-6 rounded-lg bg-emerald-200 grid place-items-center">
+            <Zap size={14} className="text-emerald-700" />
+          </div>
+          <div className="font-semibold">dP</div>
+          <Badge tone="neutral">MVP</Badge>
+        </div>
+        <div className="text-xs text-neutral-500">dP - Native AI Customer Data Platform</div>
+      </div>
+
+      {/* Body */}
+      <div className="flex">
+        {/* Sidebar */}
+        <aside className="w-[260px] border-r border-neutral-200 min-h-[calc(100vh-3rem)] p-3 hidden md:block">
+          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500 px-2 mb-2">
+            <span>Domains</span>
+            <button onClick={addDomain} className="text-emerald-700">
+              <Plus size={12} />
+            </button>
+          </div>
+          <div className="space-y-1">
+            {domains.map((d) => (
+              <SidebarButton key={d.id} icon={d.icon} label={d.label} active={active === d.id} onClick={() => setActive(d.id)} />
+            ))}
+          </div>
+          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">
+            <span>Validation Rules</span>
+            <button onClick={() => { addRule(); setActive("rules"); }} className="text-emerald-700">
+              <Plus size={12} />
+            </button>
+          </div>
+          <div className="space-y-1">
+            <SidebarButton icon={HelpCircle} label="Manage Rules" active={active === "rules"} onClick={() => setActive("rules")} />
+            <SidebarButton icon={SettingsIcon} label="Settings" active={active === "settings"} onClick={() => setActive("settings")} />
+          </div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">Recent Tasks</div>
+          <TaskMini tasks={tasks} />
+        </aside>
+
+        {/* Main */}
+        <main className="flex-1 min-h-[calc(100vh-3rem)]">
+          {active === "rules" ? (
+            <RulesManager rulesets={rulesets} setRulesets={setRulesets} addRule={addRule} />
+          ) : active === "settings" ? (
+            <SettingsPanel apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} />
+          ) : active === "customers" || active === "products" ? (
+            <TransferChat
+              kind={active === "customers" ? "credit" : "debit"}
+              rulesets={rulesets}
+              setRulesets={setRulesets}
+              tasks={tasks}
+              setTasks={setTasks}
+              apiKey={apiKey}
+              model={model}
+              addToast={addToast}
+            />
+          ) : (
+            <div className="p-6">Domain "{active}" not implemented yet.</div>
+          )}
+        </main>
+      </div>
+      <div className="fixed bottom-4 right-4 space-y-2 z-50">
+        {toasts.map((t) => (
+          <div key={t.id} className="bg-emerald-100 text-emerald-800 px-4 py-2 rounded shadow">{t.msg}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ----------------------- Panels -----------------------------
+function TaskMini({ tasks }) {
+  return (
+    <div className="space-y-1 max-h-[42vh] overflow-auto pr-1">
+      {tasks.slice(0, 12).map((t) => (
+        <div key={t.id} className="w-full text-left px-2 py-2 rounded-lg hover:bg-neutral-100">
+          <div className="flex items-center gap-2 text-sm">
+            {t.kind === "credit" ? <Users size={14} className="text-neutral-600" /> : <Package size={14} className="text-neutral-600" />}
+            <span className="truncate">{t.fileName}</span>
+          </div>
+          <div className="text-[11px] text-neutral-500 flex items-center gap-2">
+            <Badge tone={t.status === "completed" ? "success" : t.status === "failed" ? "danger" : t.status === "initiated" ? "neutral" : "warn"}>{t.status}</Badge>
+            <span>{new Date(t.createdAt).toLocaleString()}</span>
+          </div>
+        </div>
+      ))}
+      {tasks.length === 0 && <div className="text-xs text-neutral-500 px-2 py-4">No tasks yet</div>}
+    </div>
+  );
+}
+
+function RulesManager({ rulesets, setRulesets, addRule }) {
   const updateRule = (id, patch) => setRulesets((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const deleteRule = (id) => setRulesets((rs) => rs.filter((r) => r.id !== id));
 
@@ -589,27 +625,27 @@ function RulesManager({ rulesets, setRulesets }) {
     <div className="max-w-5xl mx-auto p-6">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <HelpCircle size={18} className="text-neutral-400" />
+          <HelpCircle size={18} className="text-neutral-600" />
           <h2 className="text-lg font-semibold">Validation Rules</h2>
           <Badge>{rulesets.length} total</Badge>
         </div>
-        <button onClick={addRule} className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm flex items-center gap-2">
+        <button onClick={addRule} className="px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm flex items-center gap-2">
           <Plus size={16} /> New Rule
         </button>
       </div>
 
       <div className="space-y-4">
         {rulesets.map((r) => (
-          <div key={r.id} className="rounded-xl border border-neutral-800 bg-neutral-950/40">
-            <div className="p-3 border-b border-neutral-800 flex items-center gap-2 justify-between">
+          <div key={r.id} className="rounded-xl border border-neutral-200 bg-white">
+            <div className="p-3 border-b border-neutral-200 flex items-center gap-2 justify-between">
               <div className="flex items-center gap-2">
                 <input
-                  className="bg-transparent border border-neutral-700 rounded-md px-2 py-1 text-sm"
+                  className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
                   value={r.name}
                   onChange={(e) => updateRule(r.id, { name: e.target.value })}
                 />
                 <select
-                  className="bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1 text-sm"
+                  className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
                   value={r.appliesTo}
                   onChange={(e) => updateRule(r.id, { appliesTo: e.target.value })}
                 >
@@ -618,35 +654,35 @@ function RulesManager({ rulesets, setRulesets }) {
                 </select>
                 <Toggle checked={r.enabled} onChange={(v) => updateRule(r.id, { enabled: v })} />
               </div>
-              <button onClick={() => deleteRule(r.id)} className="px-2 py-1 rounded-md bg-neutral-900 border border-neutral-700 hover:bg-neutral-800 text-sm">
+              <button onClick={() => deleteRule(r.id)} className="px-2 py-1 rounded-md bg-neutral-100 border border-neutral-300 hover:bg-neutral-200 text-sm">
                 <Trash2 size={14} />
               </button>
             </div>
 
             <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
               <Field label="Required Columns (comma-separated)">
-                <input className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.requiredColumns.join(", ")} onChange={(e) => updateRule(r.id, { requiredColumns: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.requiredColumns.join(", ")} onChange={(e) => updateRule(r.id, { requiredColumns: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
               </Field>
               <Field label="Account Number Pattern (RegExp)">
-                <input className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.accountPattern} onChange={(e) => updateRule(r.id, { accountPattern: e.target.value })} />
+                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.accountPattern} onChange={(e) => updateRule(r.id, { accountPattern: e.target.value })} />
               </Field>
               <Field label="Allowed Currencies (comma-separated)">
-                <input className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.allowedCurrencies.join(", ")} onChange={(e) => updateRule(r.id, { allowedCurrencies: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.allowedCurrencies.join(", ")} onChange={(e) => updateRule(r.id, { allowedCurrencies: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
               </Field>
               <Field label="Max Amount per Transaction">
-                <input type="number" className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.maxAmountPerTxn} onChange={(e) => updateRule(r.id, { maxAmountPerTxn: Number(e.target.value) || 0 })} />
+                <input type="number" className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.maxAmountPerTxn} onChange={(e) => updateRule(r.id, { maxAmountPerTxn: Number(e.target.value) || 0 })} />
               </Field>
               <Field label="Max Batch Total Amount">
-                <input type="number" className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.maxTotalAmount} onChange={(e) => updateRule(r.id, { maxTotalAmount: Number(e.target.value) || 0 })} />
+                <input type="number" className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.maxTotalAmount} onChange={(e) => updateRule(r.id, { maxTotalAmount: Number(e.target.value) || 0 })} />
               </Field>
               <Field label="Allow Duplicates (Account+Amount)">
-                <select className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.allowDuplicateAccountPerBatch ? "yes" : "no"} onChange={(e) => updateRule(r.id, { allowDuplicateAccountPerBatch: e.target.value === "yes" })}>
+                <select className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.allowDuplicateAccountPerBatch ? "yes" : "no"} onChange={(e) => updateRule(r.id, { allowDuplicateAccountPerBatch: e.target.value === "yes" })}>
                   <option value="no">No</option>
                   <option value="yes">Yes</option>
                 </select>
               </Field>
               <Field label="Business Hours Only (Mon–Fri 09:00–17:00)">
-                <select className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm" value={r.businessHoursOnly ? "yes" : "no"} onChange={(e) => updateRule(r.id, { businessHoursOnly: e.target.value === "yes" })}>
+                <select className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.businessHoursOnly ? "yes" : "no"} onChange={(e) => updateRule(r.id, { businessHoursOnly: e.target.value === "yes" })}>
                   <option value="no">No</option>
                   <option value="yes">Yes</option>
                 </select>
@@ -656,7 +692,7 @@ function RulesManager({ rulesets, setRulesets }) {
         ))}
       </div>
 
-      <div className="mt-8 text-sm text-neutral-400">Rules are stored locally (browser). On upload, all <em>enabled</em> rules for the active transfer type will run automatically.</div>
+      <div className="mt-8 text-sm text-neutral-600">Rules are stored locally (browser). On upload, all <em>enabled</em> rules for the active transfer type will run automatically.</div>
     </div>
   );
 }
@@ -665,7 +701,7 @@ function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
   return (
     <div className="max-w-2xl mx-auto p-6">
       <div className="mb-4 flex items-center gap-2">
-        <SettingsIcon size={18} className="text-neutral-400" />
+        <SettingsIcon size={18} className="text-neutral-600" />
         <h2 className="text-lg font-semibold">Settings</h2>
       </div>
 
@@ -674,14 +710,14 @@ function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
           <div className="relative flex-1">
             <Key size={16} className="absolute left-2 top-2.5 text-neutral-500" />
             <input
-              className="w-full bg-neutral-900 border border-neutral-700 rounded-lg pl-8 pr-3 py-2 text-sm"
+              className="w-full bg-white border border-neutral-300 rounded-lg pl-8 pr-3 py-2 text-sm"
               placeholder="sk-..."
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
             />
           </div>
           <button
-            className="px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-700 hover:bg-neutral-800"
+            className="px-3 py-2 rounded-lg bg-neutral-100 border border-neutral-300 hover:bg-neutral-200"
             onClick={() => setApiKey("")}
           >
             <Trash2 size={16} />
@@ -694,7 +730,7 @@ function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
 
       <Field label="Model">
         <select
-          className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm"
+          className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
           value={model}
           onChange={(e) => setModel(e.target.value)}
         >
@@ -704,7 +740,7 @@ function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
         </select>
       </Field>
 
-      <div className="mt-8 text-sm text-neutral-400">This MVP runs entirely client-side.</div>
+      <div className="mt-8 text-sm text-neutral-600">This MVP runs entirely client-side.</div>
     </div>
   );
 }
@@ -712,21 +748,21 @@ function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
 function Field({ label, children }) {
   return (
     <label className="block">
-      <div className="text-sm text-neutral-300 mb-1">{label}</div>
+      <div className="text-sm text-neutral-700 mb-1">{label}</div>
       {children}
     </label>
   );
 }
 
-function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, model }) {
+function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, model, addToast }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
       type: "text",
       content:
-        "Upload Excel/CSV for a bulk " +
-        (kind === "credit" ? "credit" : "debit") +
-        ' transfer. I’ll auto-validate using all enabled "' + (kind === "credit" ? "Credit" : "Debit") + "\" rules. Use Ask to query results.",
+        "Upload Excel/CSV for " +
+        (kind === "credit" ? "customers" : "products") +
+        '. I’ll auto-validate using all enabled "' + (kind === "credit" ? "Credit" : "Debit") + '" rules. Use Ask to query results.',
     },
   ]);
   const [currentPrompt, setCurrentPrompt] = useState("");
@@ -771,6 +807,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
         payload: { combined, perRule, totalAmount, rowCount },
       },
     ]);
+    addToast("File uploaded");
   };
 
   const submitBatch = async () => {
@@ -796,9 +833,10 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
     setTasks((t) => [task, ...t]);
     setMessages((m) => [
       ...m,
-      { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} transfers.` },
+      { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} records.` },
     ]);
     setCurrentBatch(null);
+    addToast("Task initiated");
   };
 
   const ask = async () => {
@@ -870,14 +908,14 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
       {/* Chat column (2/3) */}
       <div className="lg:col-span-2 h-[calc(100vh-3rem)] flex flex-col">
         {/* Header */}
-        <div className="border-b border-neutral-800 px-4 py-3 flex items-center justify-between">
+        <div className="border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            {kind === "credit" ? <CreditCard size={18} className="text-neutral-400" /> : <Banknote size={18} className="text-neutral-400" />}
-            <div className="font-medium">{kind === "credit" ? "Bulk Credit Transfer" : "Bulk Debit Transfer"}</div>
+          {kind === "credit" ? <Users size={18} className="text-neutral-600" /> : <Package size={18} className="text-neutral-600" />}
+            <div className="font-medium">{kind === "credit" ? "Customers" : "Products"}</div>
             <Badge tone="neutral">Chat Mode</Badge>
           </div>
           <div className="flex gap-2">
-            <button className="px-3 py-1.5 rounded-lg bg-neutral-900 border border-neutral-700 text-sm flex items-center gap-2" onClick={downloadTemplate}>
+            <button className="px-3 py-1.5 rounded-lg bg-neutral-100 border border-neutral-300 text-sm flex items-center gap-2" onClick={downloadTemplate}>
               <Download size={16} /> Template
             </button>
           </div>
@@ -898,17 +936,17 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
         </div>
 
         {/* Composer */}
-        <div className="border-t border-neutral-800 p-3">
+        <div className="border-t border-neutral-200 p-3">
           <div className="flex items-end gap-2">
             <label className="shrink-0">
               <input type="file" className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])} />
-              <div className="px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-700 hover:bg-neutral-800 cursor-pointer flex items-center gap-2">
+              <div className="px-3 py-2 rounded-lg bg-neutral-100 border border-neutral-300 hover:bg-neutral-200 cursor-pointer flex items-center gap-2">
                 <Upload size={16} /> Import
               </div>
             </label>
             <div className="flex-1">
               <textarea
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-3 py-2 text-sm resize-none h-20"
+                className="w-full bg-neutral-100 border border-neutral-300 rounded-xl px-3 py-2 text-sm resize-none h-20"
                 placeholder="Ask about the data, rules, or validation results..."
                 value={currentPrompt}
                 onChange={(e) => setCurrentPrompt(e.target.value)}
@@ -916,7 +954,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
               <div className="flex items-center justify-between mt-1">
                 <div className="text-[11px] text-neutral-500">Use <strong>Ask</strong> for questions · Use <strong>Task</strong> to validate/submit</div>
                 <div className="flex gap-2">
-                  <button disabled={busy} onClick={ask} className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm flex items-center gap-2 disabled:opacity-50">
+                  <button disabled={busy} onClick={ask} className="px-3 py-1.5 rounded-lg bg-neutral-200 hover:bg-neutral-300 text-sm flex items-center gap-2 disabled:opacity-50">
                     <Bot size={16} /> Ask
                   </button>
                   <button disabled={busy} onClick={submitBatch} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm flex items-center gap-2 disabled:opacity-50">
@@ -931,9 +969,9 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
       </div>
 
       {/* Side panel: Task Monitoring */}
-      <div className="border-l border-neutral-800 h-[calc(100vh-3rem)] overflow-auto">
-        <div className="px-4 py-3 border-b border-neutral-800 flex items-center gap-2">
-          <HistoryIcon size={18} className="text-neutral-400" />
+      <div className="border-l border-neutral-200 h-[calc(100vh-3rem)] overflow-auto">
+        <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-2">
+          <HistoryIcon size={18} className="text-neutral-600" />
           <div className="font-medium">Task Monitoring</div>
         </div>
         {tasksOfKind.length === 0 ? (
@@ -941,7 +979,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
         ) : (
           <ul className="p-2 space-y-2">
             {tasksOfKind.map((t) => (
-              <li key={t.id} className="p-3 bg-neutral-900 rounded-xl border border-neutral-800">
+              <li key={t.id} className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
                 <div className="flex items-center justify-between gap-2">
                   <div
                     className={`text-sm truncate ${
@@ -963,7 +1001,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
                 {t.status !== "completed" && (
                   <div className="mt-2 flex justify-end">
                     <button
-                      className="px-2 py-1 rounded-md bg-neutral-800 border border-neutral-700 text-xs"
+                      className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs"
                       onClick={() => {
                         setSelectedTask(t);
                         setSelectedEndpoint(t.endpoint || "");
@@ -981,10 +1019,10 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
     </div>
     {selectedTask && (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
-        <div className="bg-neutral-900 p-4 rounded-lg border border-neutral-700 w-80">
+        <div className="bg-neutral-100 p-4 rounded-lg border border-neutral-300 w-80">
           <div className="mb-2 font-medium">Select API endpoint</div>
           <select
-            className="w-full bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-sm"
+            className="w-full bg-neutral-200 border border-neutral-300 rounded px-2 py-1 text-sm"
             value={selectedEndpoint}
             onChange={(e) => setSelectedEndpoint(e.target.value)}
           >
@@ -996,7 +1034,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
           <div className="flex justify-end gap-2 mt-4">
             <button
               onClick={() => setSelectedTask(null)}
-              className="px-3 py-1.5 rounded-md bg-neutral-800 border border-neutral-700 text-sm"
+              className="px-3 py-1.5 rounded-md bg-neutral-200 border border-neutral-300 text-sm"
             >
               Cancel
             </button>
