@@ -772,6 +772,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
   const scrollRef = useRef(null);
   const [selectedTask, setSelectedTask] = useState(null);
   const [selectedEndpoint, setSelectedEndpoint] = useState("");
+  const [showTasks, setShowTasks] = useState(true);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
