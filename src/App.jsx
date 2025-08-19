@@ -38,7 +38,7 @@ import * as XLSX from "xlsx";
  * @typedef RuleSet
  * @property {string} id
  * @property {string} name
- * @property {TransferKind} appliesTo
+ * @property {string} appliesTo // domain id
  * @property {boolean} enabled
  * @property {string[]} requiredColumns
  * @property {string} accountPattern
@@ -138,7 +138,7 @@ const DEFAULT_RULESETS = [
   {
     id: uid("rule"),
     name: "Credit: Standard THB",
-    appliesTo: "credit",
+    appliesTo: "customers",
     enabled: true,
     requiredColumns: ["RecipientName", "AccountNumber", "BankCode", "Amount", "Currency", "Note"],
     accountPattern: "^\\d{10,12}$",
@@ -151,7 +151,7 @@ const DEFAULT_RULESETS = [
   {
     id: uid("rule"),
     name: "Debit: Standard THB",
-    appliesTo: "debit",
+    appliesTo: "products",
     enabled: true,
     requiredColumns: ["RecipientName", "AccountNumber", "BankCode", "Amount", "Currency", "Note"],
     accountPattern: "^\\d{10,12}$",
@@ -262,11 +262,11 @@ function validateAgainstRule(rows, rule) {
  * Validate against all enabled rules for the given kind
  * @param {BatchRow[]} rows
  * @param {RuleSet[]} rulesets
- * @param {TransferKind} kind
+ * @param {string} domain
  * @returns {{combined: ValidationIssue[], perRule: RuleResult[], totalAmount:number, rowCount:number}}
  */
-function validateWithRules(rows, rulesets, kind) {
-  const activeRules = rulesets.filter((r) => r.enabled && r.appliesTo === kind);
+function validateWithRules(rows, rulesets, domain) {
+  const activeRules = rulesets.filter((r) => r.enabled && r.appliesTo === domain);
   const totalAmount = rows.reduce((s, r) => s + (Number(r.Amount) || 0), 0);
   const rowCount = rows.length;
 
@@ -353,7 +353,7 @@ function Toggle({ checked, onChange }) {
   );
 }
 
-function MessageBubble({ msg, rulesets, setRulesets, kind }) {
+function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
   const isUser = msg.role === "user";
   const bubbleCls = isUser
     ? "bg-neutral-200 text-neutral-900"
@@ -374,7 +374,7 @@ function MessageBubble({ msg, rulesets, setRulesets, kind }) {
             payload={msg.payload}
             rulesets={rulesets}
             setRulesets={setRulesets}
-            kind={kind}
+            domain={domain}
           />
         )}
         {(msg.type === "text" || msg.type === "summary") && (
@@ -385,11 +385,11 @@ function MessageBubble({ msg, rulesets, setRulesets, kind }) {
   );
 }
 
-function ValidationPanel({ payload, rulesets = [], setRulesets, kind }) {
+function ValidationPanel({ payload, rulesets = [], setRulesets, domain }) {
   const { combined = [], perRule = [], totalAmount = 0, rowCount = 0 } = payload || {};
   const errors = combined.filter((i) => i.level === "error");
   const warns = combined.filter((i) => i.level === "warning");
-  const applicable = rulesets.filter((r) => r.appliesTo === kind);
+  const applicable = rulesets.filter((r) => r.appliesTo === domain);
   const toggleRule = (id, enabled) =>
     setRulesets((rs) => rs.map((r) => (r.id === id ? { ...r, enabled } : r)));
   return (
@@ -456,8 +456,8 @@ export default function App() {
       if (rawV1) {
         const r = JSON.parse(rawV1);
         return [
-          { id: uid("rule"), name: "Migrated Credit", appliesTo: "credit", enabled: true, ...r },
-          { id: uid("rule"), name: "Migrated Debit", appliesTo: "debit", enabled: true, ...r },
+          { id: uid("rule"), name: "Migrated Credit", appliesTo: "customers", enabled: true, ...r },
+          { id: uid("rule"), name: "Migrated Debit", appliesTo: "products", enabled: true, ...r },
         ];
       }
     } catch {}
@@ -490,23 +490,32 @@ export default function App() {
     addToast("Domain added");
   };
 
+  const updateRule = (id, patch) =>
+    setRulesets((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+
+  const deleteRule = (id) => {
+    setRulesets((rs) => rs.filter((r) => r.id !== id));
+    if (active === id) setActive("customers");
+  };
+
   const addRule = () => {
-    setRulesets((rs) => [
-      {
-        id: uid("rule"),
-        name: "New Rule",
-        appliesTo: "credit",
-        enabled: true,
-        requiredColumns: ["RecipientName", "AccountNumber", "BankCode", "Amount", "Currency"],
-        accountPattern: "^\\d{10,12}$",
-        allowedCurrencies: ["THB"],
-        maxAmountPerTxn: 2000000,
-        maxTotalAmount: 10000000,
-        allowDuplicateAccountPerBatch: false,
-        businessHoursOnly: false,
-      },
-      ...rs,
-    ]);
+    const domain = domains.some((d) => d.id === active) ? active : domains[0].id;
+    const id = uid("rule");
+    const newRule = {
+      id,
+      name: "New Rule",
+      appliesTo: domain,
+      enabled: true,
+      requiredColumns: ["RecipientName", "AccountNumber", "BankCode", "Amount", "Currency"],
+      accountPattern: "^\\d{10,12}$",
+      allowedCurrencies: ["THB"],
+      maxAmountPerTxn: 2000000,
+      maxTotalAmount: 10000000,
+      allowDuplicateAccountPerBatch: false,
+      businessHoursOnly: false,
+    };
+    setRulesets((rs) => [newRule, ...rs]);
+    setActive(id);
     addToast("Rule added");
   };
 
@@ -552,28 +561,46 @@ export default function App() {
               <SidebarButton key={d.id} icon={d.icon} label={d.label} active={active === d.id} onClick={() => setActive(d.id)} />
             ))}
           </div>
-          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">
-            <span>Validation Rules</span>
-            <button onClick={() => { addRule(); setActive("rules"); }} className="text-emerald-700">
-              <Plus size={12} />
-            </button>
-          </div>
-          <div className="space-y-1">
-            <SidebarButton icon={HelpCircle} label="Manage Rules" active={active === "rules"} onClick={() => setActive("rules")} />
-            <SidebarButton icon={SettingsIcon} label="Settings" active={active === "settings"} onClick={() => setActive("settings")} />
-          </div>
+            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">
+              <span>Validation Rules</span>
+              <button onClick={addRule} className="text-emerald-700">
+                <Plus size={12} />
+              </button>
+            </div>
+            <div className="space-y-1">
+              {rulesets.map((r) => {
+                const dom = domains.find((d) => d.id === r.appliesTo);
+                const Icon = dom ? dom.icon : HelpCircle;
+                return (
+                  <SidebarButton
+                    key={r.id}
+                    icon={Icon}
+                    label={r.name}
+                    active={active === r.id}
+                    onClick={() => setActive(r.id)}
+                  />
+                );
+              })}
+              <SidebarButton icon={SettingsIcon} label="Settings" active={active === "settings"} onClick={() => setActive("settings")} />
+            </div>
           <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">Recent Tasks</div>
           <TaskMini tasks={tasks} />
         </aside>
 
         {/* Main */}
         <main className="flex-1 min-h-[calc(100vh-3rem)]">
-          {active === "rules" ? (
-            <RulesManager rulesets={rulesets} setRulesets={setRulesets} addRule={addRule} />
-          ) : active === "settings" ? (
+          {active === "settings" ? (
             <SettingsPanel apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} />
-          ) : active === "customers" || active === "products" ? (
+          ) : rulesets.find((r) => r.id === active) ? (
+            <RuleEditor
+              rule={rulesets.find((r) => r.id === active)}
+              updateRule={updateRule}
+              deleteRule={deleteRule}
+              domains={domains}
+            />
+          ) : domains.find((d) => d.id === active) ? (
             <TransferChat
+              domain={active}
               kind={active === "customers" ? "credit" : "debit"}
               rulesets={rulesets}
               setRulesets={setRulesets}
@@ -618,82 +645,129 @@ function TaskMini({ tasks }) {
   );
 }
 
-function RulesManager({ rulesets, setRulesets, addRule }) {
-  const updateRule = (id, patch) => setRulesets((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  const deleteRule = (id) => setRulesets((rs) => rs.filter((r) => r.id !== id));
-
+// Rule editor for a single rule
+function RuleEditor({ rule, updateRule, deleteRule, domains }) {
+  if (!rule) return null;
   return (
     <div className="max-w-5xl mx-auto p-6">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <HelpCircle size={18} className="text-neutral-600" />
-          <h2 className="text-lg font-semibold">Validation Rules</h2>
-          <Badge>{rulesets.length} total</Badge>
+          <h2 className="text-lg font-semibold">Validation Rule</h2>
         </div>
-        <button onClick={addRule} className="px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm flex items-center gap-2">
-          <Plus size={16} /> New Rule
+        <button
+          onClick={() => deleteRule(rule.id)}
+          className="px-2 py-1 rounded-md bg-neutral-100 border border-neutral-300 hover:bg-neutral-200 text-sm"
+        >
+          <Trash2 size={14} />
         </button>
       </div>
 
-      <div className="space-y-4">
-        {rulesets.map((r) => (
-          <div key={r.id} className="rounded-xl border border-neutral-200 bg-white">
-            <div className="p-3 border-b border-neutral-200 flex items-center gap-2 justify-between">
-              <div className="flex items-center gap-2">
-                <input
-                  className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
-                  value={r.name}
-                  onChange={(e) => updateRule(r.id, { name: e.target.value })}
-                />
-                <select
-                  className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
-                  value={r.appliesTo}
-                  onChange={(e) => updateRule(r.id, { appliesTo: e.target.value })}
-                >
-                  <option value="credit">Credit</option>
-                  <option value="debit">Debit</option>
-                </select>
-                <Toggle checked={r.enabled} onChange={(v) => updateRule(r.id, { enabled: v })} />
-              </div>
-              <button onClick={() => deleteRule(r.id)} className="px-2 py-1 rounded-md bg-neutral-100 border border-neutral-300 hover:bg-neutral-200 text-sm">
-                <Trash2 size={14} />
-              </button>
-            </div>
+      <div className="rounded-xl border border-neutral-200 bg-white">
+        <div className="p-3 border-b border-neutral-200 flex items-center gap-2">
+          <input
+            className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
+            value={rule.name}
+            onChange={(e) => updateRule(rule.id, { name: e.target.value })}
+          />
+          <select
+            className="bg-white border border-neutral-300 rounded-md px-2 py-1 text-sm"
+            value={rule.appliesTo}
+            onChange={(e) => updateRule(rule.id, { appliesTo: e.target.value })}
+          >
+            {domains.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+          <Toggle checked={rule.enabled} onChange={(v) => updateRule(rule.id, { enabled: v })} />
+        </div>
 
-            <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Field label="Required Columns (comma-separated)">
-                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.requiredColumns.join(", ")} onChange={(e) => updateRule(r.id, { requiredColumns: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
-              </Field>
-              <Field label="Account Number Pattern (RegExp)">
-                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.accountPattern} onChange={(e) => updateRule(r.id, { accountPattern: e.target.value })} />
-              </Field>
-              <Field label="Allowed Currencies (comma-separated)">
-                <input className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.allowedCurrencies.join(", ")} onChange={(e) => updateRule(r.id, { allowedCurrencies: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
-              </Field>
-              <Field label="Max Amount per Transaction">
-                <input type="number" className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.maxAmountPerTxn} onChange={(e) => updateRule(r.id, { maxAmountPerTxn: Number(e.target.value) || 0 })} />
-              </Field>
-              <Field label="Max Batch Total Amount">
-                <input type="number" className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.maxTotalAmount} onChange={(e) => updateRule(r.id, { maxTotalAmount: Number(e.target.value) || 0 })} />
-              </Field>
-              <Field label="Allow Duplicates (Account+Amount)">
-                <select className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.allowDuplicateAccountPerBatch ? "yes" : "no"} onChange={(e) => updateRule(r.id, { allowDuplicateAccountPerBatch: e.target.value === "yes" })}>
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
-                </select>
-              </Field>
-              <Field label="Business Hours Only (Mon–Fri 09:00–17:00)">
-                <select className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm" value={r.businessHoursOnly ? "yes" : "no"} onChange={(e) => updateRule(r.id, { businessHoursOnly: e.target.value === "yes" })}>
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
-                </select>
-              </Field>
-            </div>
-          </div>
-        ))}
+        <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="Required Columns (comma-separated)">
+            <input
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.requiredColumns.join(", ")}
+              onChange={(e) =>
+                updateRule(rule.id, {
+                  requiredColumns: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+          </Field>
+          <Field label="Account Number Pattern (RegExp)">
+            <input
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.accountPattern}
+              onChange={(e) => updateRule(rule.id, { accountPattern: e.target.value })}
+            />
+          </Field>
+          <Field label="Allowed Currencies (comma-separated)">
+            <input
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.allowedCurrencies.join(", ")}
+              onChange={(e) =>
+                updateRule(rule.id, {
+                  allowedCurrencies: e.target.value
+                    .split(",")
+                    .map((s) => s.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+          </Field>
+          <Field label="Max Amount per Transaction">
+            <input
+              type="number"
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.maxAmountPerTxn}
+              onChange={(e) => updateRule(rule.id, { maxAmountPerTxn: Number(e.target.value) || 0 })}
+            />
+          </Field>
+          <Field label="Max Batch Total Amount">
+            <input
+              type="number"
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.maxTotalAmount}
+              onChange={(e) => updateRule(rule.id, { maxTotalAmount: Number(e.target.value) || 0 })}
+            />
+          </Field>
+          <Field label="Allow Duplicates (Account+Amount)">
+            <select
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.allowDuplicateAccountPerBatch ? "yes" : "no"}
+              onChange={(e) =>
+                updateRule(rule.id, {
+                  allowDuplicateAccountPerBatch: e.target.value === "yes",
+                })
+              }
+            >
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </Field>
+          <Field label="Business Hours Only (Mon–Fri 09:00–17:00)">
+            <select
+              className="w-full bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm"
+              value={rule.businessHoursOnly ? "yes" : "no"}
+              onChange={(e) =>
+                updateRule(rule.id, { businessHoursOnly: e.target.value === "yes" })
+              }
+            >
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </Field>
+        </div>
       </div>
 
-      <div className="mt-8 text-sm text-neutral-600">Rules are stored locally (browser). On upload, all <em>enabled</em> rules for the active transfer type will run automatically.</div>
+      <div className="mt-8 text-sm text-neutral-600">
+        Rules are stored locally (browser). On upload, all <em>enabled</em> rules for the active domain will run automatically.
+      </div>
     </div>
   );
 }
@@ -755,7 +829,7 @@ function Field({ label, children }) {
   );
 }
 
-function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, model, addToast }) {
+function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, apiKey, model, addToast }) {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -783,7 +857,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
   const handleUpload = async (file) => {
     if (!file) return;
     const rows = await parseWorkbook(file);
-    const { combined, perRule, totalAmount, rowCount } = validateWithRules(rows, rulesets, kind);
+    const { combined, perRule, totalAmount, rowCount } = validateWithRules(rows, rulesets, domain);
 
     const batch = {
       id: uid("batch"),
@@ -940,6 +1014,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
               rulesets={rulesets}
               setRulesets={setRulesets}
               kind={kind}
+              domain={domain}
             />
           ))}
           <div className="text-center text-xs text-neutral-600 pt-6">Drop an Excel/CSV anywhere above to import</div>
