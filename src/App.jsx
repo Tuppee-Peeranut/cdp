@@ -632,10 +632,20 @@ function TaskMini({ tasks }) {
         <div key={t.id} className="w-full text-left px-2 py-2 rounded-lg hover:bg-neutral-100">
           <div className="flex items-center gap-2 text-sm">
             {t.kind === "credit" ? <Users size={14} className="text-neutral-600" /> : <Package size={14} className="text-neutral-600" />}
-            <span className="truncate">{t.fileName}</span>
+            <span className="truncate flex-1">{t.fileName}</span>
+            <span
+              className={`w-2 h-2 rounded-full ${
+                t.status === "completed"
+                  ? "bg-emerald-500"
+                  : t.status === "failed"
+                  ? "bg-rose-500"
+                  : t.status === "initiated"
+                  ? "bg-neutral-400"
+                  : "bg-amber-400"
+              }`}
+            ></span>
           </div>
           <div className="text-[11px] text-neutral-500 flex items-center gap-2">
-            <Badge tone={t.status === "completed" ? "success" : t.status === "failed" ? "danger" : t.status === "initiated" ? "neutral" : "warn"}>{t.status}</Badge>
             <span>{new Date(t.createdAt).toLocaleString()}</span>
           </div>
         </div>
