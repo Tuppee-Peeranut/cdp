@@ -295,9 +295,9 @@ async function askOpenAI(apiKey, model, userPrompt, context) {
     ],
     temperature: 0.2,
   };
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -947,7 +947,7 @@ function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, ap
           : null,
       };
       let answer = "(No API key set. Go to Settings to add an OpenAI key.)";
-      if (apiKey) answer = await askOpenAI(apiKey, model, question, ctx);
+      answer = await askOpenAI(apiKey, model, question, ctx);
       setMessages((m) => [...m, { role: "assistant", type: "text", content: answer }]);
     } catch (err) {
       setMessages((m) => [...m, { role: "assistant", type: "text", content: String(err?.message || err) }]);
