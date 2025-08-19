@@ -922,9 +922,11 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
             </button>
             <button
               onClick={() => setShowTasks((s) => !s)}
-              className="px-3 py-1.5 rounded-lg bg-neutral-100 border border-neutral-300 text-sm flex items-center gap-2"
+              className="p-2 rounded-lg hover:bg-neutral-200"
+              aria-label={showTasks ? "Hide Tasks" : "Show Tasks"}
+              title={showTasks ? "Hide Tasks" : "Show Tasks"}
             >
-              <HistoryIcon size={16} /> {showTasks ? "Hide Tasks" : "Show Tasks"}
+              <HistoryIcon size={16} />
             </button>
           </div>
         </div>
@@ -961,7 +963,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
                   onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
                 />
                 <div
-                  className="p-2 rounded-lg bg-neutral-200 hover:bg-neutral-300 border border-neutral-300 cursor-pointer"
+                  className="p-2 rounded-lg hover:bg-neutral-200 cursor-pointer"
                   title="Import"
                 >
                   <Upload size={16} />
@@ -972,7 +974,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
               <button
                 disabled={busy}
                 onClick={ask}
-                className="p-2 rounded-lg bg-neutral-200 hover:bg-neutral-300 disabled:opacity-50"
+                className="p-2 rounded-lg hover:bg-neutral-200 disabled:opacity-50"
                 aria-label="Ask"
                 title="Ask"
               >
@@ -981,7 +983,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
               <button
                 disabled={busy}
                 onClick={submitBatch}
-                className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
+                className="p-2 rounded-lg text-emerald-600 hover:bg-neutral-200 hover:text-emerald-500 disabled:opacity-50"
                 aria-label="Task"
                 title="Task"
               >
