@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Upload,
   Zap,
-  Bot,
   Play,
   Settings as SettingsIcon,
   History as HistoryIcon,
@@ -18,6 +17,7 @@ import {
   Plus,
   ToggleLeft,
   ToggleRight,
+  Send,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -771,6 +771,7 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
   const scrollRef = useRef(null);
   const [selectedTask, setSelectedTask] = useState(null);
   const [selectedEndpoint, setSelectedEndpoint] = useState("");
+  const [showTasks, setShowTasks] = useState(true);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -904,9 +905,9 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
 
   return (
     <>
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-0">
-      {/* Chat column (2/3) */}
-      <div className="lg:col-span-2 h-[calc(100vh-3rem)] flex flex-col">
+    <div className={`grid grid-cols-1 ${showTasks ? "lg:grid-cols-3" : "lg:grid-cols-1"} gap-0`}>
+      {/* Chat column */}
+      <div className={`${showTasks ? "lg:col-span-2" : "lg:col-span-1"} h-[calc(100vh-3rem)] flex flex-col`}>
         {/* Header */}
         <div className="border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -917,6 +918,12 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
           <div className="flex gap-2">
             <button className="px-3 py-1.5 rounded-lg bg-neutral-100 border border-neutral-300 text-sm flex items-center gap-2" onClick={downloadTemplate}>
               <Download size={16} /> Template
+            </button>
+            <button
+              onClick={() => setShowTasks((s) => !s)}
+              className="px-3 py-1.5 rounded-lg bg-neutral-100 border border-neutral-300 text-sm flex items-center gap-2"
+            >
+              <HistoryIcon size={16} /> {showTasks ? "Hide Tasks" : "Show Tasks"}
             </button>
           </div>
         </div>
@@ -937,85 +944,107 @@ function TransferChat({ kind, rulesets, setRulesets, tasks, setTasks, apiKey, mo
 
         {/* Composer */}
         <div className="border-t border-neutral-200 p-3">
-          <div className="flex items-end gap-2">
-            <label className="shrink-0">
-              <input type="file" className="hidden" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])} />
-              <div className="px-3 py-2 rounded-lg bg-neutral-100 border border-neutral-300 hover:bg-neutral-200 cursor-pointer flex items-center gap-2">
-                <Upload size={16} /> Import
-              </div>
-            </label>
-            <div className="flex-1">
-              <textarea
-                className="w-full bg-neutral-100 border border-neutral-300 rounded-xl px-3 py-2 text-sm resize-none h-20"
-                placeholder="Ask about the data, rules, or validation results..."
-                value={currentPrompt}
-                onChange={(e) => setCurrentPrompt(e.target.value)}
-              />
-              <div className="flex items-center justify-between mt-1">
-                <div className="text-[11px] text-neutral-500">Use <strong>Ask</strong> for questions · Use <strong>Task</strong> to validate/submit</div>
-                <div className="flex gap-2">
-                  <button disabled={busy} onClick={ask} className="px-3 py-1.5 rounded-lg bg-neutral-200 hover:bg-neutral-300 text-sm flex items-center gap-2 disabled:opacity-50">
-                    <Bot size={16} /> Ask
-                  </button>
-                  <button disabled={busy} onClick={submitBatch} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm flex items-center gap-2 disabled:opacity-50">
-                    <Play size={16} /> Task (transfer)
-                  </button>
+          <div className="relative">
+            <textarea
+              className="w-full bg-neutral-100 border border-neutral-300 rounded-xl text-sm resize-none h-20 px-3 pt-2 pb-10 pr-20 pl-10"
+              placeholder="Ask about the data, rules, or validation results..."
+              value={currentPrompt}
+              onChange={(e) => setCurrentPrompt(e.target.value)}
+            />
+            <div className="absolute left-2 bottom-2">
+              <label>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={(e) => e.target.files?.[0] && handleUpload(e.target.files[0])}
+                />
+                <div
+                  className="p-2 rounded-lg bg-neutral-200 hover:bg-neutral-300 border border-neutral-300 cursor-pointer"
+                  title="Import"
+                >
+                  <Upload size={16} />
                 </div>
-              </div>
+              </label>
             </div>
+            <div className="absolute right-2 bottom-2 flex gap-2">
+              <button
+                disabled={busy}
+                onClick={ask}
+                className="p-2 rounded-lg bg-neutral-200 hover:bg-neutral-300 disabled:opacity-50"
+                aria-label="Ask"
+                title="Ask"
+              >
+                <Send size={16} />
+              </button>
+              <button
+                disabled={busy}
+                onClick={submitBatch}
+                className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50"
+                aria-label="Task"
+                title="Task"
+              >
+                <Play size={16} />
+              </button>
+            </div>
+          </div>
+          <div className="text-[11px] text-neutral-500 mt-2">
+            Use <strong>Ask</strong> for questions · Use <strong>Task</strong> to validate/submit
           </div>
           <div className="text-[11px] text-neutral-500 mt-2">Hint: Import first — validation runs automatically using enabled rules for this transfer type.</div>
         </div>
       </div>
 
       {/* Side panel: Task Monitoring */}
-      <div className="border-l border-neutral-200 h-[calc(100vh-3rem)] overflow-auto">
-        <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-2">
-          <HistoryIcon size={18} className="text-neutral-600" />
-          <div className="font-medium">Task Monitoring</div>
-        </div>
-        {tasksOfKind.length === 0 ? (
-          <div className="p-4 text-sm text-neutral-500">No tasks yet. Upload a file to start.</div>
-        ) : (
-          <ul className="p-2 space-y-2">
-            {tasksOfKind.map((t) => (
-              <li key={t.id} className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
-                <div className="flex items-center justify-between gap-2">
-                  <div
-                    className={`text-sm truncate ${
-                      t.status === "connecting" || t.status === "transferring" ? "ai-highlight" : ""
-                    }`}
-                  >
-                    {t.fileName}
-                  </div>
-                  <Badge tone={t.status === "completed" ? "success" : t.status === "failed" ? "danger" : t.status === "initiated" ? "neutral" : "warn"}>
-                    {t.status}
-                  </Badge>
-                </div>
-                <div className="text-xs text-neutral-500 mt-1">
-                  {new Date(t.createdAt).toLocaleString()} · {t.rowCount} rows · Total {t.totalAmount.toLocaleString()}
-                </div>
-                {t.endpoint && (
-                  <div className="text-xs text-neutral-500 mt-1 truncate">API: {t.endpoint}</div>
-                )}
-                {t.status !== "completed" && (
-                  <div className="mt-2 flex justify-end">
-                    <button
-                      className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs"
-                      onClick={() => {
-                        setSelectedTask(t);
-                        setSelectedEndpoint(t.endpoint || "");
-                      }}
+      {showTasks && (
+        <div className="border-l border-neutral-200 h-[calc(100vh-3rem)] overflow-auto">
+          <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-2">
+            <HistoryIcon size={18} className="text-neutral-600" />
+            <div className="font-medium">Task Monitoring</div>
+          </div>
+          {tasksOfKind.length === 0 ? (
+            <div className="p-4 text-sm text-neutral-500">No tasks yet. Upload a file to start.</div>
+          ) : (
+            <ul className="p-2 space-y-2">
+              {tasksOfKind.map((t) => (
+                <li key={t.id} className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <div
+                      className={`text-sm truncate ${
+                        t.status === "connecting" || t.status === "transferring" ? "ai-highlight" : ""
+                      }`}
                     >
-                      Select API
-                    </button>
+                      {t.fileName}
+                    </div>
+                    <Badge tone={t.status === "completed" ? "success" : t.status === "failed" ? "danger" : t.status === "initiated" ? "neutral" : "warn"}>
+                      {t.status}
+                    </Badge>
                   </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+                  <div className="text-xs text-neutral-500 mt-1">
+                    {new Date(t.createdAt).toLocaleString()} · {t.rowCount} rows · Total {t.totalAmount.toLocaleString()}
+                  </div>
+                  {t.endpoint && (
+                    <div className="text-xs text-neutral-500 mt-1 truncate">API: {t.endpoint}</div>
+                  )}
+                  {t.status !== "completed" && (
+                    <div className="mt-2 flex justify-end">
+                      <button
+                        className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs"
+                        onClick={() => {
+                          setSelectedTask(t);
+                          setSelectedEndpoint(t.endpoint || "");
+                        }}
+                      >
+                        Select API
+                      </button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
     {selectedTask && (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center">
