@@ -19,6 +19,13 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   revoked INTEGER DEFAULT 0,
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS oidc_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  sub TEXT UNIQUE NOT NULL,
+  name TEXT,
+  email TEXT
+);
 `);
 
 export default db;

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { login as oidcLogin, logout as oidcLogout, getUser as getOidcUser } from "./oidc";
 import {
   Upload,
   Zap,
@@ -477,12 +478,17 @@ export default function App() {
   ]);
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
+  const [oidcUser, setOidcUser] = useState(null);
 
   const addToast = (msg) => {
     const id = uid("toast");
     setToasts((ts) => [...ts, { id, msg }]);
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
   };
+
+  useEffect(() => {
+    getOidcUser().then(setOidcUser);
+  }, []);
 
   const addDomain = () => {
     const id = uid("domain");
@@ -543,7 +549,16 @@ export default function App() {
           <div className="font-semibold">dP</div>
           <Badge tone="neutral">MVP</Badge>
         </div>
-        <div className="text-xs text-neutral-500">dP - Native AI Customer Data Platform</div>
+        <div className="flex items-center gap-2 text-xs text-neutral-500">
+          {oidcUser ? (
+            <>
+              <span>{oidcUser.profile?.name || oidcUser.profile?.email}</span>
+              <button onClick={oidcLogout} className="underline">Logout</button>
+            </>
+          ) : (
+            <button onClick={oidcLogin} className="underline">Login</button>
+          )}
+        </div>
       </div>
 
       {/* Body */}

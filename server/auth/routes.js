@@ -1,46 +1,35 @@
 import express from 'express';
-import { signup, login, logout, refresh } from './service.js';
+import passport from 'passport';
 
 const router = express.Router();
 
-router.post('/signup', async (req, res) => {
-  const { username, password } = req.body;
-  try {
-    const result = await signup({ username, password });
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+// Start OIDC login
+router.get('/login', passport.authenticate('oidc'));
+
+// OIDC callback handler
+router.get('/callback',
+  passport.authenticate('oidc', { failureRedirect: '/' }),
+  (req, res) => {
+    res.redirect('/');
   }
+);
+
+// Logout and redirect through the provider
+router.get('/logout', (req, res, next) => {
+  const idToken = req.user && req.user.id_token;
+  req.logout(err => {
+    if (err) return next(err);
+    const url = `${process.env.OIDC_LOGOUT_URL}?post_logout_redirect_uri=${encodeURIComponent(process.env.OIDC_POST_LOGOUT_REDIRECT_URI || '/')}` + (idToken ? `&id_token_hint=${idToken}` : '');
+    res.redirect(url);
+  });
 });
 
-router.post('/login', async (req, res) => {
-  const { username, password } = req.body;
-  try {
-    const tokens = await login({ username, password });
-    res.json(tokens);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+// Current authenticated user
+router.get('/me', (req, res) => {
+  if (!req.isAuthenticated || !req.isAuthenticated()) {
+    return res.json({ user: null });
   }
-});
-
-router.post('/logout', async (req, res) => {
-  const { refreshToken } = req.body;
-  try {
-    const result = await logout({ refreshToken });
-    res.json(result);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
-});
-
-router.post('/refresh', async (req, res) => {
-  const { refreshToken } = req.body;
-  try {
-    const tokens = await refresh({ refreshToken });
-    res.json(tokens);
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+  res.json({ user: req.user });
 });
 
 export default router;
