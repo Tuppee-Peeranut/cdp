@@ -126,6 +126,8 @@ const STORAGE_KEYS = {
   tasks: "dbulk.tasks.v1",
   apiKey: "dbulk.openai_api_key",
   model: "dbulk.openai_model",
+  accessToken: "dbulk.access_token",
+  refreshToken: "dbulk.refresh_token",
 };
 
 function uid(prefix = "id") {
@@ -281,7 +283,7 @@ function validateWithRules(rows, rulesets, domain) {
 }
 
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
-async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refreshAccessToken) {
+async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refreshToken) {
   const sys = `You are dP Copilot, a careful data platform assistant.
 - Explain validations and suggest fixes succinctly.
 - Never fabricate banking details.
@@ -307,8 +309,8 @@ async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refres
 
   let res = await doFetch(accessToken);
 
-  if (res.status === 401 && typeof refreshAccessToken === "function") {
-    const newToken = await refreshAccessToken();
+  if (res.status === 401 && typeof refreshToken === "function") {
+    const newToken = await refreshToken();
     if (newToken) {
       res = await doFetch(newToken);
     }
@@ -491,8 +493,8 @@ export default function App() {
   ]);
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
-  const [accessToken, setAccessToken] = useState(null);
-  const [refreshToken, setRefreshToken] = useState(null);
+  const [accessToken, setAccessToken] = useState(() => localStorage.getItem(STORAGE_KEYS.accessToken));
+  const [refreshTokenValue, setRefreshTokenValue] = useState(() => localStorage.getItem(STORAGE_KEYS.refreshToken));
   const [mfaToken, setMfaToken] = useState(null);
   const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
   const csrfTokenRef = useRef("");
@@ -514,7 +516,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchCsrfToken();
+    (async () => {
+      await fetchCsrfToken();
+      await refreshToken();
+    })();
   }, []);
 
   const handleLogin = async () => {
@@ -530,7 +535,9 @@ export default function App() {
       setMfaToken(data.mfaToken);
     } else if (data?.accessToken) {
       setAccessToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
+      setRefreshTokenValue(data.refreshToken);
+      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
+      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
       await fetchCsrfToken();
     }
   };
@@ -546,7 +553,9 @@ export default function App() {
     const data = result.data?.verifyMfa;
     if (data?.accessToken) {
       setAccessToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
+      setRefreshTokenValue(data.refreshToken);
+      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
+      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
       setMfaToken(null);
       setLoginData({ username: "", password: "", code: "" });
       await fetchCsrfToken();
@@ -555,28 +564,35 @@ export default function App() {
 
   const handleLogout = async () => {
     setAccessToken(null);
-    setRefreshToken(null);
+    setRefreshTokenValue(null);
+    localStorage.removeItem(STORAGE_KEYS.accessToken);
+    localStorage.removeItem(STORAGE_KEYS.refreshToken);
     await fetchCsrfToken();
   };
 
-  const refreshAccessToken = async () => {
-    if (!refreshToken) return null;
+  const refreshToken = async () => {
+    const rt = refreshTokenValue || localStorage.getItem(STORAGE_KEYS.refreshToken);
+    if (!rt) return null;
     const query = `mutation Refresh($rt:String!){ refresh(refreshToken:$rt){ accessToken refreshToken } }`;
     const res = await fetch('/auth/graphql', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
-      body: JSON.stringify({ query, variables: { rt: refreshToken } })
+      body: JSON.stringify({ query, variables: { rt } })
     });
     const result = await res.json();
     const data = result.data?.refresh;
     if (data?.accessToken) {
       setAccessToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
+      setRefreshTokenValue(data.refreshToken);
+      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
+      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
       await fetchCsrfToken();
       return data.accessToken;
     }
     setAccessToken(null);
-    setRefreshToken(null);
+    setRefreshTokenValue(null);
+    localStorage.removeItem(STORAGE_KEYS.accessToken);
+    localStorage.removeItem(STORAGE_KEYS.refreshToken);
     return null;
   };
 
@@ -1074,7 +1090,7 @@ function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, ap
           : null,
       };
       let answer = "(No API key set. Go to Settings to add an OpenAI key.)";
-      answer = await askOpenAI(apiKey, model, question, ctx, accessToken, refreshAccessToken);
+      answer = await askOpenAI(apiKey, model, question, ctx, accessToken, refreshToken);
       setMessages((m) => [...m, { role: "assistant", type: "text", content: answer }]);
     } catch (err) {
       setMessages((m) => [...m, { role: "assistant", type: "text", content: String(err?.message || err) }]);
