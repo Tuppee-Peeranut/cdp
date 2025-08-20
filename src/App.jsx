@@ -480,6 +480,7 @@ export default function App() {
   const [auth, setAuth] = useState(null);
   const [mfaToken, setMfaToken] = useState(null);
   const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
+  const csrfTokenRef = useRef("");
 
   const addToast = (msg) => {
     const id = uid("toast");
@@ -487,11 +488,25 @@ export default function App() {
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
   };
 
+  const fetchCsrfToken = async () => {
+    try {
+      const res = await fetch('/auth/csrf');
+      const data = await res.json();
+      csrfTokenRef.current = data.csrfToken;
+    } catch (err) {
+      console.error('Failed to fetch CSRF token', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchCsrfToken();
+  }, []);
+
   const handleLogin = async () => {
     const query = `mutation Login($u:String!, $p:String!){ login(username:$u, password:$p){ accessToken refreshToken mfaRequired mfaToken } }`;
     const res = await fetch('/auth/graphql', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
       body: JSON.stringify({ query, variables: { u: loginData.username, p: loginData.password } })
     });
     const result = await res.json();
@@ -500,6 +515,7 @@ export default function App() {
       setMfaToken(data.mfaToken);
     } else if (data?.accessToken) {
       setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+      await fetchCsrfToken();
     }
   };
 
@@ -507,7 +523,7 @@ export default function App() {
     const query = `mutation Verify($t:String!, $c:String!){ verifyMfa(mfaToken:$t, code:$c){ accessToken refreshToken } }`;
     const res = await fetch('/auth/graphql', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
       body: JSON.stringify({ query, variables: { t: mfaToken, c: loginData.code } })
     });
     const result = await res.json();
@@ -516,11 +532,13 @@ export default function App() {
       setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
       setMfaToken(null);
       setLoginData({ username: "", password: "", code: "" });
+      await fetchCsrfToken();
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setAuth(null);
+    await fetchCsrfToken();
   };
 
   const addDomain = () => {
