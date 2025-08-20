@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import db from './db.js';
+import { logEvent } from './logger.js';
 
 const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET || 'access-secret';
 const ACCESS_EXPIRES_IN = '15m';
@@ -90,9 +91,15 @@ export async function signup({ username, password, role = 'user' }) {
 export async function login({ username, password }) {
   const stmt = db.prepare('SELECT * FROM users WHERE username = ?');
   const user = stmt.get(username);
-  if (!user) throw new Error('Invalid credentials');
+  if (!user) {
+    logEvent('login_failed', { username });
+    throw new Error('Invalid credentials');
+  }
   const valid = bcrypt.compareSync(password, user.password);
-  if (!valid) throw new Error('Invalid credentials');
+  if (!valid) {
+    logEvent('login_failed', { username });
+    throw new Error('Invalid credentials');
+  }
   const mfa = db.prepare('SELECT * FROM mfa WHERE user_id = ?').get(user.id);
   if (mfa) {
     const mfaToken = jwt.sign({ userId: user.id }, ACCESS_SECRET, { expiresIn: '5m' });
@@ -102,19 +109,28 @@ export async function login({ username, password }) {
   const refreshToken = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
   db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(refreshToken, user.id, expiresAt);
+  logEvent('login_success', { userId: user.id, username });
   return { accessToken, refreshToken, role: user.role };
 }
 
 export async function logout({ refreshToken }) {
+  const row = db.prepare('SELECT user_id FROM refresh_tokens WHERE token = ?').get(refreshToken);
   db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+  if (row) {
+    logEvent('logout', { userId: row.user_id });
+  }
   return { success: true };
 }
 
 export async function refresh({ refreshToken }) {
   const row = db.prepare('SELECT * FROM refresh_tokens WHERE token = ? AND revoked = 0').get(refreshToken);
-  if (!row) throw new Error('Invalid token');
+  if (!row) {
+    logEvent('refresh_failed', { reason: 'invalid_token' });
+    throw new Error('Invalid token');
+  }
   if (row.expires_at < Math.floor(Date.now() / 1000)) {
     db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+    logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
     throw new Error('Expired token');
   }
   db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
@@ -123,6 +139,7 @@ export async function refresh({ refreshToken }) {
   db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(newRefresh, row.user_id, expiresAt);
   const user = db.prepare('SELECT role FROM users WHERE id = ?').get(row.user_id);
   const accessToken = generateAccessToken(row.user_id, user.role);
+  logEvent('token_refresh', { userId: row.user_id });
   return { accessToken, refreshToken: newRefresh, role: user.role };
 }
 
