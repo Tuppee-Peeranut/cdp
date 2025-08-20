@@ -281,7 +281,7 @@ function validateWithRules(rows, rulesets, domain) {
 }
 
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
-async function askOpenAI(apiKey, model, userPrompt, context) {
+async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refreshAccessToken) {
   const sys = `You are dP Copilot, a careful data platform assistant.
 - Explain validations and suggest fixes succinctly.
 - Never fabricate banking details.
@@ -295,11 +295,25 @@ async function askOpenAI(apiKey, model, userPrompt, context) {
     ],
     temperature: 0.2,
   };
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const doFetch = (token) =>
+    fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  let res = await doFetch(accessToken);
+
+  if (res.status === 401 && typeof refreshAccessToken === "function") {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      res = await doFetch(newToken);
+    }
+  }
+
   if (!res.ok) {
     const t = await res.text();
     throw new Error(`OpenAI error: ${res.status} ${t}`);
@@ -477,7 +491,8 @@ export default function App() {
   ]);
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
-  const [auth, setAuth] = useState(null);
+  const [accessToken, setAccessToken] = useState(null);
+  const [refreshToken, setRefreshToken] = useState(null);
   const [mfaToken, setMfaToken] = useState(null);
   const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
   const csrfTokenRef = useRef("");
@@ -514,7 +529,8 @@ export default function App() {
     if (data?.mfaRequired) {
       setMfaToken(data.mfaToken);
     } else if (data?.accessToken) {
-      setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+      setAccessToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
       await fetchCsrfToken();
     }
   };
@@ -529,7 +545,8 @@ export default function App() {
     const result = await res.json();
     const data = result.data?.verifyMfa;
     if (data?.accessToken) {
-      setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+      setAccessToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
       setMfaToken(null);
       setLoginData({ username: "", password: "", code: "" });
       await fetchCsrfToken();
@@ -537,8 +554,30 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    setAuth(null);
+    setAccessToken(null);
+    setRefreshToken(null);
     await fetchCsrfToken();
+  };
+
+  const refreshAccessToken = async () => {
+    if (!refreshToken) return null;
+    const query = `mutation Refresh($rt:String!){ refresh(refreshToken:$rt){ accessToken refreshToken } }`;
+    const res = await fetch('/auth/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
+      body: JSON.stringify({ query, variables: { rt: refreshToken } })
+    });
+    const result = await res.json();
+    const data = result.data?.refresh;
+    if (data?.accessToken) {
+      setAccessToken(data.accessToken);
+      setRefreshToken(data.refreshToken);
+      await fetchCsrfToken();
+      return data.accessToken;
+    }
+    setAccessToken(null);
+    setRefreshToken(null);
+    return null;
   };
 
   const addDomain = () => {
@@ -601,7 +640,7 @@ export default function App() {
           <Badge tone="neutral">MVP</Badge>
         </div>
         <div className="flex items-center gap-2 text-xs text-neutral-500">
-          {auth ? (
+          {accessToken ? (
             <button onClick={handleLogout} className="underline">Logout</button>
           ) : mfaToken ? (
             <>
@@ -1035,7 +1074,7 @@ function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, ap
           : null,
       };
       let answer = "(No API key set. Go to Settings to add an OpenAI key.)";
-      answer = await askOpenAI(apiKey, model, question, ctx);
+      answer = await askOpenAI(apiKey, model, question, ctx, accessToken, refreshAccessToken);
       setMessages((m) => [...m, { role: "assistant", type: "text", content: answer }]);
     } catch (err) {
       setMessages((m) => [...m, { role: "assistant", type: "text", content: String(err?.message || err) }]);
