@@ -65,19 +65,19 @@ function verifyTotp(secret, token) {
   return false;
 }
 
-function generateAccessToken(userId) {
-  return jwt.sign({ userId }, ACCESS_SECRET, { expiresIn: ACCESS_EXPIRES_IN });
+function generateAccessToken(userId, role) {
+  return jwt.sign({ userId, role }, ACCESS_SECRET, { expiresIn: ACCESS_EXPIRES_IN });
 }
 
 function generateRefreshToken() {
   return crypto.randomBytes(40).toString('hex');
 }
 
-export async function signup({ username, password }) {
+export async function signup({ username, password, role = 'user' }) {
   const passwordHash = bcrypt.hashSync(password, 10);
-  const stmt = db.prepare('INSERT INTO users (username, password) VALUES (?, ?)');
+  const stmt = db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)');
   try {
-    stmt.run(username, passwordHash);
+    stmt.run(username, passwordHash, role);
     return { success: true };
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -98,11 +98,11 @@ export async function login({ username, password }) {
     const mfaToken = jwt.sign({ userId: user.id }, ACCESS_SECRET, { expiresIn: '5m' });
     return { mfaRequired: true, mfaToken };
   }
-  const accessToken = generateAccessToken(user.id);
+  const accessToken = generateAccessToken(user.id, user.role);
   const refreshToken = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
   db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(refreshToken, user.id, expiresAt);
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, role: user.role };
 }
 
 export async function logout({ refreshToken }) {
@@ -121,8 +121,9 @@ export async function refresh({ refreshToken }) {
   const newRefresh = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
   db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(newRefresh, row.user_id, expiresAt);
-  const accessToken = generateAccessToken(row.user_id);
-  return { accessToken, refreshToken: newRefresh };
+  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(row.user_id);
+  const accessToken = generateAccessToken(row.user_id, user.role);
+  return { accessToken, refreshToken: newRefresh, role: user.role };
 }
 
 export async function enrollMfa({ username, password }) {
@@ -153,9 +154,10 @@ export async function verifyMfa({ mfaToken, code }) {
   if (!mfa) throw new Error('MFA not enrolled');
   const valid = verifyTotp(mfa.secret, code);
   if (!valid) throw new Error('Invalid code');
-  const accessToken = generateAccessToken(payload.userId);
+  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(payload.userId);
+  const accessToken = generateAccessToken(payload.userId, user.role);
   const refreshToken = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
   db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(refreshToken, payload.userId, expiresAt);
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, role: user.role };
 }
