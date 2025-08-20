@@ -79,12 +79,11 @@ function generateRefreshToken() {
 
 export async function signup({ username, password, role = 'user' }) {
   const passwordHash = bcrypt.hashSync(password, 10);
-  const stmt = db.prepare('INSERT INTO users (username, password, role) VALUES (?, ?, ?)');
   try {
-    stmt.run(username, passwordHash, role);
+    await db.query('INSERT INTO users (username, password, role) VALUES ($1, $2, $3)', [username, passwordHash, role]);
     return { success: true };
   } catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+    if (err.code === '23505') {
       throw new Error('User exists');
     }
     throw err;
@@ -92,8 +91,8 @@ export async function signup({ username, password, role = 'user' }) {
 }
 
 export async function login({ username, password }) {
-  const stmt = db.prepare('SELECT * FROM users WHERE username = ?');
-  const user = stmt.get(username);
+  const { rows: userRows } = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+  const user = userRows[0];
   if (!user) {
     logEvent('login_failed', { username });
     throw new Error('Invalid credentials');
@@ -103,7 +102,8 @@ export async function login({ username, password }) {
     logEvent('login_failed', { username });
     throw new Error('Invalid credentials');
   }
-  const mfa = db.prepare('SELECT * FROM mfa WHERE user_id = ?').get(user.id);
+  const { rows: mfaRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [user.id]);
+  const mfa = mfaRows[0];
   if (mfa) {
     const mfaToken = jwt.sign({ userId: user.id }, ACCESS_SECRET, { expiresIn: '5m' });
     return { mfaRequired: true, mfaToken };
@@ -111,54 +111,60 @@ export async function login({ username, password }) {
   const accessToken = generateAccessToken(user.id, user.role);
   const refreshToken = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(refreshToken, user.id, expiresAt);
+  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [refreshToken, user.id, expiresAt]);
   logEvent('login_success', { userId: user.id, username });
   return { accessToken, refreshToken, role: user.role };
 }
 
 export async function logout({ refreshToken }) {
-  const row = db.prepare('SELECT user_id FROM refresh_tokens WHERE token = ?').get(refreshToken);
-  db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
-  if (row) {
-    logEvent('logout', { userId: row.user_id });
+  const { rows } = await db.query('SELECT user_id FROM refresh_tokens WHERE token = $1', [refreshToken]);
+  await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
+  if (rows[0]) {
+    logEvent('logout', { userId: rows[0].user_id });
   }
   return { success: true };
 }
 
 export async function refresh({ refreshToken }) {
-  const row = db.prepare('SELECT * FROM refresh_tokens WHERE token = ? AND revoked = 0').get(refreshToken);
+  const { rows } = await db.query('SELECT * FROM refresh_tokens WHERE token = $1 AND revoked = false', [refreshToken]);
+  const row = rows[0];
   if (!row) {
     logEvent('refresh_failed', { reason: 'invalid_token' });
     throw new Error('Invalid token');
   }
   if (row.expires_at < Math.floor(Date.now() / 1000)) {
-    db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+    await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
     logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
     throw new Error('Expired token');
   }
-  db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+  await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
   const newRefresh = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(newRefresh, row.user_id, expiresAt);
-  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(row.user_id);
+  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [newRefresh, row.user_id, expiresAt]);
+  const { rows: userRows } = await db.query('SELECT role FROM users WHERE id = $1', [row.user_id]);
+  const user = userRows[0];
   const accessToken = generateAccessToken(row.user_id, user.role);
   logEvent('token_refresh', { userId: row.user_id });
   return { accessToken, refreshToken: newRefresh, role: user.role };
 }
 
 export async function enrollMfa({ username, password }) {
-  const stmt = db.prepare('SELECT * FROM users WHERE username = ?');
-  const user = stmt.get(username);
+  const { rows: userRows } = await db.query('SELECT * FROM users WHERE username = $1', [username]);
+  const user = userRows[0];
   if (!user) throw new Error('Invalid credentials');
   const valid = bcrypt.compareSync(password, user.password);
   if (!valid) throw new Error('Invalid credentials');
-  const existing = db.prepare('SELECT * FROM mfa WHERE user_id = ?').get(user.id);
+  const { rows: existingRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [user.id]);
+  const existing = existingRows[0];
   if (existing) {
     const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${existing.secret}&issuer=cdp`;
     return { otpauthUrl, secret: existing.secret };
   }
   const secret = generateMfaSecret();
-  db.prepare('INSERT OR REPLACE INTO mfa (user_id, secret) VALUES (?, ?)').run(user.id, secret);
+  await db.query(
+    'INSERT INTO mfa (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret',
+    [user.id, secret]
+  );
   const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${secret}&issuer=cdp`;
   return { otpauthUrl, secret };
 }
@@ -170,14 +176,16 @@ export async function verifyMfa({ mfaToken, code }) {
   } catch (err) {
     throw new Error('Invalid token');
   }
-  const mfa = db.prepare('SELECT * FROM mfa WHERE user_id = ?').get(payload.userId);
+  const { rows: mfaRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [payload.userId]);
+  const mfa = mfaRows[0];
   if (!mfa) throw new Error('MFA not enrolled');
   const valid = verifyTotp(mfa.secret, code);
   if (!valid) throw new Error('Invalid code');
-  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(payload.userId);
+  const { rows: userRows } = await db.query('SELECT role FROM users WHERE id = $1', [payload.userId]);
+  const user = userRows[0];
   const accessToken = generateAccessToken(payload.userId, user.role);
   const refreshToken = generateRefreshToken();
   const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  db.prepare('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(refreshToken, payload.userId, expiresAt);
+  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [refreshToken, payload.userId, expiresAt]);
   return { accessToken, refreshToken, role: user.role };
 }

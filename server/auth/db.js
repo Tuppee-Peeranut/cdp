@@ -1,37 +1,37 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+import { Pool } from 'pg';
 import fs from 'fs';
+import path from 'path';
 
-const dbPath = path.resolve('./server/data/auth.db');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const db = new Database(dbPath);
+const pool = new Pool({
+  host: process.env.PGHOST,
+  port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
+  database: process.env.PGDATABASE,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  max: parseInt(process.env.PGPOOL_MAX || '10', 10)
+});
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE NOT NULL,
-  password TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user'
-);
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-  token TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  revoked INTEGER DEFAULT 0,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
-CREATE TABLE IF NOT EXISTS oidc_users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  provider TEXT NOT NULL,
-  sub TEXT UNIQUE NOT NULL,
-  name TEXT,
-  email TEXT
-);
-CREATE TABLE IF NOT EXISTS mfa (
-  user_id INTEGER PRIMARY KEY,
-  secret TEXT NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES users(id)
-);
-`);
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
 
-export default db;
+async function runMigrations() {
+  const migrationsDir = path.resolve('./server/auth/migrations');
+  const files = fs.existsSync(migrationsDir)
+    ? fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort()
+    : [];
+  for (const file of files) {
+    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+    await pool.query(sql);
+  }
+}
+
+try {
+  await runMigrations();
+} catch (err) {
+  console.error('Failed to run migrations', err);
+  throw err;
+}
+
+export default pool;
