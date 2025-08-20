@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import './index.css';
 import { handleCallback } from './oidc.js';
+import RoleGuard from './RoleGuard.jsx';
 
 if (window.location.pathname === '/auth/callback') {
   handleCallback().then(() => {
@@ -11,7 +12,9 @@ if (window.location.pathname === '/auth/callback') {
 } else {
   createRoot(document.getElementById('root')).render(
     <React.StrictMode>
-      <App />
+      <RoleGuard role="admin">
+        <App />
+      </RoleGuard>
     </React.StrictMode>
   );
 }

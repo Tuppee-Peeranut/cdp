@@ -7,6 +7,7 @@ export const schema = buildSchema(`
     refreshToken: String
     mfaRequired: Boolean
     mfaToken: String
+    role: String
   }
   type Success { success: Boolean! }
   type MfaEnrollment { otpauthUrl: String!, secret: String! }
