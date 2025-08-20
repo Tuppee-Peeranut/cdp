@@ -69,104 +69,130 @@ function verifyTotp(secret, token) {
   return false;
 }
 
-function generateAccessToken(userId, role) {
-  return jwt.sign({ userId, role }, ACCESS_SECRET, { expiresIn: ACCESS_EXPIRES_IN });
+function generateAccessToken(userId, role, tenantId) {
+  return jwt.sign({ userId, role, tenantId }, ACCESS_SECRET, { expiresIn: ACCESS_EXPIRES_IN });
 }
 
 function generateRefreshToken() {
   return crypto.randomBytes(40).toString('hex');
 }
 
-export async function signup({ username, password, role = 'user' }) {
-  const passwordHash = bcrypt.hashSync(password, 10);
+async function withTenant(tenantId, fn) {
+  const client = await db.connect();
   try {
-    await db.query('INSERT INTO users (username, password, role) VALUES ($1, $2, $3)', [username, passwordHash, role]);
-    return { success: true };
+    await client.query('BEGIN');
+    await client.query('SET LOCAL app.tenant_id = $1', [tenantId]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
   } catch (err) {
-    if (err.code === '23505') {
-      throw new Error('User exists');
-    }
+    await client.query('ROLLBACK');
     throw err;
+  } finally {
+    client.release();
   }
 }
 
-export async function login({ username, password }) {
-  const { rows: userRows } = await db.query('SELECT * FROM users WHERE username = $1', [username]);
-  const user = userRows[0];
-  if (!user) {
-    logEvent('login_failed', { username });
-    throw new Error('Invalid credentials');
-  }
-  const valid = bcrypt.compareSync(password, user.password);
-  if (!valid) {
-    logEvent('login_failed', { username });
-    throw new Error('Invalid credentials');
-  }
-  const { rows: mfaRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [user.id]);
-  const mfa = mfaRows[0];
-  if (mfa) {
-    const mfaToken = jwt.sign({ userId: user.id }, ACCESS_SECRET, { expiresIn: '5m' });
-    return { mfaRequired: true, mfaToken };
-  }
-  const accessToken = generateAccessToken(user.id, user.role);
-  const refreshToken = generateRefreshToken();
-  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [refreshToken, user.id, expiresAt]);
-  logEvent('login_success', { userId: user.id, username });
-  return { accessToken, refreshToken, role: user.role };
+export async function signup({ username, password, role = 'user', tenantId = 1 }) {
+  const passwordHash = bcrypt.hashSync(password, 10);
+  return withTenant(tenantId, async client => {
+    try {
+      await client.query('INSERT INTO users (username, password, role, tenant_id) VALUES ($1, $2, $3, $4)', [username, passwordHash, role, tenantId]);
+      return { success: true };
+    } catch (err) {
+      if (err.code === '23505') {
+        throw new Error('User exists');
+      }
+      throw err;
+    }
+  });
 }
 
-export async function logout({ refreshToken }) {
-  const { rows } = await db.query('SELECT user_id FROM refresh_tokens WHERE token = $1', [refreshToken]);
-  await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
-  if (rows[0]) {
-    logEvent('logout', { userId: rows[0].user_id });
-  }
-  return { success: true };
+export async function login({ username, password, tenantId = 1 }) {
+  return withTenant(tenantId, async client => {
+    const { rows: userRows } = await client.query('SELECT * FROM users WHERE username = $1 AND tenant_id = $2', [username, tenantId]);
+    const user = userRows[0];
+    if (!user) {
+      logEvent('login_failed', { username });
+      throw new Error('Invalid credentials');
+    }
+    const valid = bcrypt.compareSync(password, user.password);
+    if (!valid) {
+      logEvent('login_failed', { username });
+      throw new Error('Invalid credentials');
+    }
+    const { rows: mfaRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [user.id, tenantId]);
+    const mfa = mfaRows[0];
+    if (mfa) {
+      const mfaToken = jwt.sign({ userId: user.id, tenantId }, ACCESS_SECRET, { expiresIn: '5m' });
+      return { mfaRequired: true, mfaToken };
+    }
+    const accessToken = generateAccessToken(user.id, user.role, tenantId);
+    const refreshToken = generateRefreshToken();
+    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [refreshToken, user.id, expiresAt, tenantId]);
+    logEvent('login_success', { userId: user.id, username });
+    return { accessToken, refreshToken, role: user.role };
+  });
 }
 
-export async function refresh({ refreshToken }) {
-  const { rows } = await db.query('SELECT * FROM refresh_tokens WHERE token = $1 AND revoked = false', [refreshToken]);
-  const row = rows[0];
-  if (!row) {
-    logEvent('refresh_failed', { reason: 'invalid_token' });
-    throw new Error('Invalid token');
-  }
-  if (row.expires_at < Math.floor(Date.now() / 1000)) {
-    await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
-    logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
-    throw new Error('Expired token');
-  }
-  await db.query('DELETE FROM refresh_tokens WHERE token = $1', [refreshToken]);
-  const newRefresh = generateRefreshToken();
-  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [newRefresh, row.user_id, expiresAt]);
-  const { rows: userRows } = await db.query('SELECT role FROM users WHERE id = $1', [row.user_id]);
-  const user = userRows[0];
-  const accessToken = generateAccessToken(row.user_id, user.role);
-  logEvent('token_refresh', { userId: row.user_id });
-  return { accessToken, refreshToken: newRefresh, role: user.role };
+export async function logout({ refreshToken, tenantId = 1 }) {
+  return withTenant(tenantId, async client => {
+    const { rows } = await client.query('SELECT user_id FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
+    await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
+    if (rows[0]) {
+      logEvent('logout', { userId: rows[0].user_id });
+    }
+    return { success: true };
+  });
 }
 
-export async function enrollMfa({ username, password }) {
-  const { rows: userRows } = await db.query('SELECT * FROM users WHERE username = $1', [username]);
-  const user = userRows[0];
-  if (!user) throw new Error('Invalid credentials');
-  const valid = bcrypt.compareSync(password, user.password);
-  if (!valid) throw new Error('Invalid credentials');
-  const { rows: existingRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [user.id]);
-  const existing = existingRows[0];
-  if (existing) {
-    const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${existing.secret}&issuer=cdp`;
-    return { otpauthUrl, secret: existing.secret };
-  }
-  const secret = generateMfaSecret();
-  await db.query(
-    'INSERT INTO mfa (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret',
-    [user.id, secret]
-  );
-  const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${secret}&issuer=cdp`;
-  return { otpauthUrl, secret };
+export async function refresh({ refreshToken, tenantId = 1 }) {
+  return withTenant(tenantId, async client => {
+    const { rows } = await client.query('SELECT * FROM refresh_tokens WHERE token = $1 AND tenant_id = $2 AND revoked = false', [refreshToken, tenantId]);
+    const row = rows[0];
+    if (!row) {
+      logEvent('refresh_failed', { reason: 'invalid_token' });
+      throw new Error('Invalid token');
+    }
+    if (row.expires_at < Math.floor(Date.now() / 1000)) {
+      await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
+      logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
+      throw new Error('Expired token');
+    }
+    await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
+    const newRefresh = generateRefreshToken();
+    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [newRefresh, row.user_id, expiresAt, tenantId]);
+    const { rows: userRows } = await client.query('SELECT role FROM users WHERE id = $1 AND tenant_id = $2', [row.user_id, tenantId]);
+    const user = userRows[0];
+    const accessToken = generateAccessToken(row.user_id, user.role, tenantId);
+    logEvent('token_refresh', { userId: row.user_id });
+    return { accessToken, refreshToken: newRefresh, role: user.role };
+  });
+}
+
+export async function enrollMfa({ username, password, tenantId = 1 }) {
+  return withTenant(tenantId, async client => {
+    const { rows: userRows } = await client.query('SELECT * FROM users WHERE username = $1 AND tenant_id = $2', [username, tenantId]);
+    const user = userRows[0];
+    if (!user) throw new Error('Invalid credentials');
+    const valid = bcrypt.compareSync(password, user.password);
+    if (!valid) throw new Error('Invalid credentials');
+    const { rows: existingRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [user.id, tenantId]);
+    const existing = existingRows[0];
+    if (existing) {
+      const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${existing.secret}&issuer=cdp`;
+      return { otpauthUrl, secret: existing.secret };
+    }
+    const secret = generateMfaSecret();
+    await client.query(
+      'INSERT INTO mfa (user_id, secret, tenant_id) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret',
+      [user.id, secret, tenantId]
+    );
+    const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${secret}&issuer=cdp`;
+    return { otpauthUrl, secret };
+  });
 }
 
 export async function verifyMfa({ mfaToken, code }) {
@@ -176,16 +202,19 @@ export async function verifyMfa({ mfaToken, code }) {
   } catch (err) {
     throw new Error('Invalid token');
   }
-  const { rows: mfaRows } = await db.query('SELECT * FROM mfa WHERE user_id = $1', [payload.userId]);
-  const mfa = mfaRows[0];
-  if (!mfa) throw new Error('MFA not enrolled');
-  const valid = verifyTotp(mfa.secret, code);
-  if (!valid) throw new Error('Invalid code');
-  const { rows: userRows } = await db.query('SELECT role FROM users WHERE id = $1', [payload.userId]);
-  const user = userRows[0];
-  const accessToken = generateAccessToken(payload.userId, user.role);
-  const refreshToken = generateRefreshToken();
-  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-  await db.query('INSERT INTO refresh_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)', [refreshToken, payload.userId, expiresAt]);
-  return { accessToken, refreshToken, role: user.role };
+  const tenantId = payload.tenantId;
+  return withTenant(tenantId, async client => {
+    const { rows: mfaRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [payload.userId, tenantId]);
+    const mfa = mfaRows[0];
+    if (!mfa) throw new Error('MFA not enrolled');
+    const valid = verifyTotp(mfa.secret, code);
+    if (!valid) throw new Error('Invalid code');
+    const { rows: userRows } = await client.query('SELECT role FROM users WHERE id = $1 AND tenant_id = $2', [payload.userId, tenantId]);
+    const user = userRows[0];
+    const accessToken = generateAccessToken(payload.userId, user.role, tenantId);
+    const refreshToken = generateRefreshToken();
+    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [refreshToken, payload.userId, expiresAt, tenantId]);
+    return { accessToken, refreshToken, role: user.role };
+  });
 }
