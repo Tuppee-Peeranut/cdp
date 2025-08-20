@@ -6,10 +6,10 @@ passport.serializeUser((user, done) => {
   done(null, user.sub);
 });
 
-passport.deserializeUser((sub, done) => {
+passport.deserializeUser(async (sub, done) => {
   try {
-    const row = db.prepare('SELECT * FROM oidc_users WHERE sub = ?').get(sub);
-    done(null, row);
+    const { rows } = await db.query('SELECT * FROM oidc_users WHERE sub = $1', [sub]);
+    done(null, rows[0]);
   } catch (err) {
     done(err);
   }
@@ -24,14 +24,13 @@ passport.use('oidc', new OIDCStrategy({
   clientSecret: process.env.OIDC_CLIENT_SECRET,
   callbackURL: process.env.OIDC_CALLBACK_URL,
   scope: process.env.OIDC_SCOPES || 'openid profile email'
-}, (issuer, sub, profile, accessToken, refreshToken, params, done) => {
+}, async (issuer, sub, profile, accessToken, refreshToken, params, done) => {
   try {
     const name = profile.displayName || '';
     const email = profile.emails && profile.emails[0] && profile.emails[0].value;
-    const exists = db.prepare('SELECT * FROM oidc_users WHERE sub = ?').get(sub);
-    if (!exists) {
-      db.prepare('INSERT INTO oidc_users (provider, sub, name, email) VALUES (?, ?, ?, ?)')
-        .run(issuer, sub, name, email);
+    const { rows } = await db.query('SELECT * FROM oidc_users WHERE sub = $1', [sub]);
+    if (rows.length === 0) {
+      await db.query('INSERT INTO oidc_users (provider, sub, name, email) VALUES ($1, $2, $3, $4)', [issuer, sub, name, email]);
     }
     return done(null, { sub, name, email, id_token: params.id_token });
   } catch (err) {
