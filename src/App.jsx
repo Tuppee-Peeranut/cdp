@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { login as oidcLogin, logout as oidcLogout, getUser as getOidcUser } from "./oidc";
 import {
   Upload,
   Zap,
@@ -478,7 +477,9 @@ export default function App() {
   ]);
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
-  const [oidcUser, setOidcUser] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [mfaToken, setMfaToken] = useState(null);
+  const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
 
   const addToast = (msg) => {
     const id = uid("toast");
@@ -486,9 +487,41 @@ export default function App() {
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
   };
 
-  useEffect(() => {
-    getOidcUser().then(setOidcUser);
-  }, []);
+  const handleLogin = async () => {
+    const query = `mutation Login($u:String!, $p:String!){ login(username:$u, password:$p){ accessToken refreshToken mfaRequired mfaToken } }`;
+    const res = await fetch('/auth/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables: { u: loginData.username, p: loginData.password } })
+    });
+    const result = await res.json();
+    const data = result.data?.login;
+    if (data?.mfaRequired) {
+      setMfaToken(data.mfaToken);
+    } else if (data?.accessToken) {
+      setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+    }
+  };
+
+  const handleVerify = async () => {
+    const query = `mutation Verify($t:String!, $c:String!){ verifyMfa(mfaToken:$t, code:$c){ accessToken refreshToken } }`;
+    const res = await fetch('/auth/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables: { t: mfaToken, c: loginData.code } })
+    });
+    const result = await res.json();
+    const data = result.data?.verifyMfa;
+    if (data?.accessToken) {
+      setAuth({ accessToken: data.accessToken, refreshToken: data.refreshToken });
+      setMfaToken(null);
+      setLoginData({ username: "", password: "", code: "" });
+    }
+  };
+
+  const handleLogout = () => {
+    setAuth(null);
+  };
 
   const addDomain = () => {
     const id = uid("domain");
@@ -550,13 +583,35 @@ export default function App() {
           <Badge tone="neutral">MVP</Badge>
         </div>
         <div className="flex items-center gap-2 text-xs text-neutral-500">
-          {oidcUser ? (
+          {auth ? (
+            <button onClick={handleLogout} className="underline">Logout</button>
+          ) : mfaToken ? (
             <>
-              <span>{oidcUser.profile?.name || oidcUser.profile?.email}</span>
-              <button onClick={oidcLogout} className="underline">Logout</button>
+              <input
+                value={loginData.code}
+                onChange={(e) => setLoginData((d) => ({ ...d, code: e.target.value }))}
+                placeholder="MFA code"
+                className="border rounded px-1 py-0.5"
+              />
+              <button onClick={handleVerify} className="underline">Verify</button>
             </>
           ) : (
-            <button onClick={oidcLogin} className="underline">Login</button>
+            <>
+              <input
+                value={loginData.username}
+                onChange={(e) => setLoginData((d) => ({ ...d, username: e.target.value }))}
+                placeholder="User"
+                className="border rounded px-1 py-0.5"
+              />
+              <input
+                type="password"
+                value={loginData.password}
+                onChange={(e) => setLoginData((d) => ({ ...d, password: e.target.value }))}
+                placeholder="Pass"
+                className="border rounded px-1 py-0.5"
+              />
+              <button onClick={handleLogin} className="underline">Login</button>
+            </>
           )}
         </div>
       </div>
