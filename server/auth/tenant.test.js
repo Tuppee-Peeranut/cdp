@@ -2,18 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || 'testsecret';
-process.env.PGHOST = process.env.PGHOST || '127.0.0.1';
-process.env.PGUSER = process.env.PGUSER || 'postgres';
-process.env.PGDATABASE = process.env.PGDATABASE || 'cdp_test';
-process.env.PGPASSWORD = process.env.PGPASSWORD || 'postgres';
-process.env.PGPORT = process.env.PGPORT || '5432';
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'testkey';
 
-const { default: db } = await import('./db.js');
+const { default: supabase } = await import('./db.js');
 const { signup, login, refresh } = await import('./service.js');
 
 test('users are isolated by tenant', async () => {
-  await db.query('TRUNCATE TABLE refresh_tokens, mfa, oidc_users, users RESTART IDENTITY CASCADE');
-  const { rows: tenantRows } = await db.query("SELECT id FROM tenants WHERE name IN ('tenant_a','tenant_b') ORDER BY name");
+  await supabase.from('refresh_tokens').delete().neq('token', '');
+  await supabase.from('mfa').delete().neq('user_id', 0);
+  await supabase.from('oidc_users').delete().neq('id', 0);
+  await supabase.from('users').delete().neq('id', 0);
+
+  const { data: tenantRows } = await supabase
+    .from('tenants')
+    .select('id, name')
+    .in('name', ['tenant_a', 'tenant_b'])
+    .order('name');
   const [tenantA, tenantB] = tenantRows.map(r => r.id);
 
   await signup({ username: 'alice', password: 'pw', tenantId: tenantA });
