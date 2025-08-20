@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS oidc_users (
   name TEXT,
   email TEXT
 );
+CREATE TABLE IF NOT EXISTS mfa (
+  user_id INTEGER PRIMARY KEY,
+  secret TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
 `);
 
 export default db;
