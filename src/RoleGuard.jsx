@@ -1,19 +1,14 @@
-import React, { useEffect, useState } from 'react';
-import { getUser } from './oidc.js';
+import React from 'react';
+import { useAuth } from './AuthContext.jsx';
 
 export default function RoleGuard({ role, children }) {
-  const [userRole, setUserRole] = useState(null);
+  const { user } = useAuth();
 
-  useEffect(() => {
-    getUser().then(user => {
-      setUserRole(user?.profile?.role || 'user');
-    });
-  }, []);
-
-  if (userRole === null) {
+  if (user === undefined) {
     return null;
   }
 
+  const userRole = user?.profile?.role || 'user';
   const allowed = Array.isArray(role) ? role : [role];
   if (allowed.length && !allowed.includes(userRole)) {
     return <div className="p-4 text-red-500">Access denied</div>;

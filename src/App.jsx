@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { login as oidcLogin, logout as oidcLogout } from './oidc.js';
+import { useAuth } from './AuthContext.jsx';
 import {
   Upload,
   Zap,
@@ -498,6 +500,7 @@ export default function App() {
   const [mfaToken, setMfaToken] = useState(null);
   const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
   const csrfTokenRef = useRef("");
+  const { user } = useAuth();
 
   const addToast = (msg) => {
     const id = uid("toast");
@@ -655,37 +658,48 @@ export default function App() {
           <div className="font-semibold">dP</div>
           <Badge tone="neutral">MVP</Badge>
         </div>
-        <div className="flex items-center gap-2 text-xs text-neutral-500">
-          {accessToken ? (
-            <button onClick={handleLogout} className="underline">Logout</button>
-          ) : mfaToken ? (
-            <>
-              <input
-                value={loginData.code}
-                onChange={(e) => setLoginData((d) => ({ ...d, code: e.target.value }))}
-                placeholder="MFA code"
-                className="border rounded px-1 py-0.5"
-              />
-              <button onClick={handleVerify} className="underline">Verify</button>
-            </>
-          ) : (
-            <>
-              <input
-                value={loginData.username}
-                onChange={(e) => setLoginData((d) => ({ ...d, username: e.target.value }))}
-                placeholder="User"
-                className="border rounded px-1 py-0.5"
-              />
-              <input
-                type="password"
-                value={loginData.password}
-                onChange={(e) => setLoginData((d) => ({ ...d, password: e.target.value }))}
-                placeholder="Pass"
-                className="border rounded px-1 py-0.5"
-              />
-              <button onClick={handleLogin} className="underline">Login</button>
-            </>
-          )}
+        <div className="flex items-center gap-4 text-xs text-neutral-500">
+          <div className="flex items-center gap-2">
+            <span>OIDC:</span>
+            {user ? (
+              <button onClick={oidcLogout} className="underline">Logout</button>
+            ) : (
+              <button onClick={oidcLogin} className="underline">Login</button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <span>API:</span>
+            {accessToken ? (
+              <button onClick={handleLogout} className="underline">Logout</button>
+            ) : mfaToken ? (
+              <>
+                <input
+                  value={loginData.code}
+                  onChange={(e) => setLoginData((d) => ({ ...d, code: e.target.value }))}
+                  placeholder="MFA code"
+                  className="border rounded px-1 py-0.5"
+                />
+                <button onClick={handleVerify} className="underline">Verify</button>
+              </>
+            ) : (
+              <>
+                <input
+                  value={loginData.username}
+                  onChange={(e) => setLoginData((d) => ({ ...d, username: e.target.value }))}
+                  placeholder="User"
+                  className="border rounded px-1 py-0.5"
+                />
+                <input
+                  type="password"
+                  value={loginData.password}
+                  onChange={(e) => setLoginData((d) => ({ ...d, password: e.target.value }))}
+                  placeholder="Pass"
+                  className="border rounded px-1 py-0.5"
+                />
+                <button onClick={handleLogin} className="underline">Login</button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
