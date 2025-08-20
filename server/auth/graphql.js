@@ -24,9 +24,33 @@ export const schema = buildSchema(`
 
 export const root = {
   signup,
-  login,
-  logout,
-  refresh,
+  login: async (args, context) => {
+    const result = await login(args);
+    if (context?.res) {
+      context.res.cookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: process.env.NODE_ENV === 'production',
+      });
+    }
+    return result;
+  },
+  logout: async (args, context) => {
+    await logout(args);
+    context?.res?.clearCookie('refreshToken');
+    return { success: true };
+  },
+  refresh: async (args, context) => {
+    const result = await refresh(args);
+    if (context?.res) {
+      context.res.cookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: process.env.NODE_ENV === 'production',
+      });
+    }
+    return result;
+  },
   enrollMfa,
   verifyMfa,
 };
