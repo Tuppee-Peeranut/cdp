@@ -12,10 +12,16 @@ import { authorize } from './auth/roles.js';
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
 
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  console.error('SESSION_SECRET environment variable is required');
+  process.exit(1);
+}
+
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'session-secret',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
   rolling: true,

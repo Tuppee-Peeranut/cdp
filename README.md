@@ -14,6 +14,15 @@ npm run dev
 ```
 In **Settings**, paste your OpenAI API Key to enable the **Ask** feature.
 
+## Environment Variables
+
+The server expects the following variables to be set before it starts:
+
+- `ACCESS_TOKEN_SECRET` – secret used to sign JSON Web Tokens.
+- `SESSION_SECRET` – secret for Express session encryption.
+
+See the **OIDC Configuration** section for additional variables when using an identity provider.
+
 ## Features
 - Chat-first workflow with **Import**, **Ask**, and **Task (transfer)**.
 - Excel/CSV parsing using `xlsx`.

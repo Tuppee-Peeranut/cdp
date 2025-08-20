@@ -10,7 +10,10 @@ export const ROLE_PERMISSIONS = {
   [ROLES.ADMIN]: ['chat:write']
 };
 
-const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET || 'access-secret';
+const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET;
+if (!ACCESS_SECRET) {
+  throw new Error('ACCESS_TOKEN_SECRET environment variable is required');
+}
 
 export function authorize(required = []) {
   const requiredRoles = Array.isArray(required) ? required : [required];

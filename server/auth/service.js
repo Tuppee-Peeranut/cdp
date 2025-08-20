@@ -4,7 +4,10 @@ import crypto from 'crypto';
 import db from './db.js';
 import { logEvent } from './logger.js';
 
-const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET || 'access-secret';
+const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET;
+if (!ACCESS_SECRET) {
+  throw new Error('ACCESS_TOKEN_SECRET environment variable is required');
+}
 const ACCESS_EXPIRES_IN = '15m';
 const REFRESH_EXPIRES_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
