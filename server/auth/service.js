@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import db from './db.js';
+import supabase from './db.js';
 import { logEvent } from './logger.js';
 
 const ACCESS_SECRET = process.env.ACCESS_TOKEN_SECRET;
@@ -77,122 +77,148 @@ function generateRefreshToken() {
   return crypto.randomBytes(40).toString('hex');
 }
 
-async function withTenant(tenantId, fn) {
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL app.tenant_id = $1', [tenantId]);
-    const result = await fn(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
 export async function signup({ username, password, role = 'user', tenantId = 1 }) {
   const passwordHash = bcrypt.hashSync(password, 10);
-  return withTenant(tenantId, async client => {
-    try {
-      await client.query('INSERT INTO users (username, password, role, tenant_id) VALUES ($1, $2, $3, $4)', [username, passwordHash, role, tenantId]);
-      return { success: true };
-    } catch (err) {
-      if (err.code === '23505') {
-        throw new Error('User exists');
-      }
-      throw err;
+  const { error } = await supabase
+    .from('users')
+    .insert({ username, password: passwordHash, role, tenant_id: tenantId });
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error('User exists');
     }
-  });
+    throw error;
+  }
+  return { success: true };
 }
 
 export async function login({ username, password, tenantId = 1 }) {
-  return withTenant(tenantId, async client => {
-    const { rows: userRows } = await client.query('SELECT * FROM users WHERE username = $1 AND tenant_id = $2', [username, tenantId]);
-    const user = userRows[0];
-    if (!user) {
-      logEvent('login_failed', { username });
-      throw new Error('Invalid credentials');
-    }
-    const valid = bcrypt.compareSync(password, user.password);
-    if (!valid) {
-      logEvent('login_failed', { username });
-      throw new Error('Invalid credentials');
-    }
-    const { rows: mfaRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [user.id, tenantId]);
-    const mfa = mfaRows[0];
-    if (mfa) {
-      const mfaToken = jwt.sign({ userId: user.id, tenantId }, ACCESS_SECRET, { expiresIn: '5m' });
-      return { mfaRequired: true, mfaToken };
-    }
-    const accessToken = generateAccessToken(user.id, user.role, tenantId);
-    const refreshToken = generateRefreshToken();
-    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [refreshToken, user.id, expiresAt, tenantId]);
-    logEvent('login_success', { userId: user.id, username });
-    return { accessToken, refreshToken, role: user.role };
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('username', username)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!user) {
+    logEvent('login_failed', { username });
+    throw new Error('Invalid credentials');
+  }
+  const valid = bcrypt.compareSync(password, user.password);
+  if (!valid) {
+    logEvent('login_failed', { username });
+    throw new Error('Invalid credentials');
+  }
+  const { data: mfa } = await supabase
+    .from('mfa')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (mfa) {
+    const mfaToken = jwt.sign({ userId: user.id, tenantId }, ACCESS_SECRET, { expiresIn: '5m' });
+    return { mfaRequired: true, mfaToken };
+  }
+  const accessToken = generateAccessToken(user.id, user.role, tenantId);
+  const refreshToken = generateRefreshToken();
+  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+  await supabase.from('refresh_tokens').insert({
+    token: refreshToken,
+    user_id: user.id,
+    expires_at: expiresAt,
+    tenant_id: tenantId
   });
+  logEvent('login_success', { userId: user.id, username });
+  return { accessToken, refreshToken, role: user.role };
 }
 
 export async function logout({ refreshToken, tenantId = 1 }) {
-  return withTenant(tenantId, async client => {
-    const { rows } = await client.query('SELECT user_id FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
-    await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
-    if (rows[0]) {
-      logEvent('logout', { userId: rows[0].user_id });
-    }
-    return { success: true };
-  });
+  const { data } = await supabase
+    .from('refresh_tokens')
+    .select('user_id')
+    .eq('token', refreshToken)
+    .eq('tenant_id', tenantId);
+  await supabase
+    .from('refresh_tokens')
+    .delete()
+    .eq('token', refreshToken)
+    .eq('tenant_id', tenantId);
+  if (data && data[0]) {
+    logEvent('logout', { userId: data[0].user_id });
+  }
+  return { success: true };
 }
 
 export async function refresh({ refreshToken, tenantId = 1 }) {
-  return withTenant(tenantId, async client => {
-    const { rows } = await client.query('SELECT * FROM refresh_tokens WHERE token = $1 AND tenant_id = $2 AND revoked = false', [refreshToken, tenantId]);
-    const row = rows[0];
-    if (!row) {
-      logEvent('refresh_failed', { reason: 'invalid_token' });
-      throw new Error('Invalid token');
-    }
-    if (row.expires_at < Math.floor(Date.now() / 1000)) {
-      await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
-      logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
-      throw new Error('Expired token');
-    }
-    await client.query('DELETE FROM refresh_tokens WHERE token = $1 AND tenant_id = $2', [refreshToken, tenantId]);
-    const newRefresh = generateRefreshToken();
-    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [newRefresh, row.user_id, expiresAt, tenantId]);
-    const { rows: userRows } = await client.query('SELECT role FROM users WHERE id = $1 AND tenant_id = $2', [row.user_id, tenantId]);
-    const user = userRows[0];
-    const accessToken = generateAccessToken(row.user_id, user.role, tenantId);
-    logEvent('token_refresh', { userId: row.user_id });
-    return { accessToken, refreshToken: newRefresh, role: user.role };
+  const { data: row, error } = await supabase
+    .from('refresh_tokens')
+    .select('*')
+    .eq('token', refreshToken)
+    .eq('tenant_id', tenantId)
+    .eq('revoked', false)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row) {
+    logEvent('refresh_failed', { reason: 'invalid_token' });
+    throw new Error('Invalid token');
+  }
+  if (row.expires_at < Math.floor(Date.now() / 1000)) {
+    await supabase
+      .from('refresh_tokens')
+      .delete()
+      .eq('token', refreshToken)
+      .eq('tenant_id', tenantId);
+    logEvent('refresh_failed', { reason: 'expired_token', userId: row.user_id });
+    throw new Error('Expired token');
+  }
+  await supabase
+    .from('refresh_tokens')
+    .delete()
+    .eq('token', refreshToken)
+    .eq('tenant_id', tenantId);
+  const newRefresh = generateRefreshToken();
+  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+  await supabase.from('refresh_tokens').insert({
+    token: newRefresh,
+    user_id: row.user_id,
+    expires_at: expiresAt,
+    tenant_id: tenantId
   });
+  const { data: user } = await supabase
+    .from('users')
+    .select('role')
+    .eq('id', row.user_id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  const accessToken = generateAccessToken(row.user_id, user.role, tenantId);
+  logEvent('token_refresh', { userId: row.user_id });
+  return { accessToken, refreshToken: newRefresh, role: user.role };
 }
 
 export async function enrollMfa({ username, password, tenantId = 1 }) {
-  return withTenant(tenantId, async client => {
-    const { rows: userRows } = await client.query('SELECT * FROM users WHERE username = $1 AND tenant_id = $2', [username, tenantId]);
-    const user = userRows[0];
-    if (!user) throw new Error('Invalid credentials');
-    const valid = bcrypt.compareSync(password, user.password);
-    if (!valid) throw new Error('Invalid credentials');
-    const { rows: existingRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [user.id, tenantId]);
-    const existing = existingRows[0];
-    if (existing) {
-      const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${existing.secret}&issuer=cdp`;
-      return { otpauthUrl, secret: existing.secret };
-    }
-    const secret = generateMfaSecret();
-    await client.query(
-      'INSERT INTO mfa (user_id, secret, tenant_id) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret',
-      [user.id, secret, tenantId]
-    );
-    const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${secret}&issuer=cdp`;
-    return { otpauthUrl, secret };
-  });
+  const { data: user, error: userErr } = await supabase
+    .from('users')
+    .select('*')
+    .eq('username', username)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (userErr) throw userErr;
+  if (!user) throw new Error('Invalid credentials');
+  const valid = bcrypt.compareSync(password, user.password);
+  if (!valid) throw new Error('Invalid credentials');
+  const { data: existing } = await supabase
+    .from('mfa')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (existing) {
+    const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${existing.secret}&issuer=cdp`;
+    return { otpauthUrl, secret: existing.secret };
+  }
+  const secret = generateMfaSecret();
+  await supabase.from('mfa').upsert({ user_id: user.id, secret, tenant_id: tenantId });
+  const otpauthUrl = `otpauth://totp/cdp:${encodeURIComponent(username)}?secret=${secret}&issuer=cdp`;
+  return { otpauthUrl, secret };
 }
 
 export async function verifyMfa({ mfaToken, code }) {
@@ -203,18 +229,30 @@ export async function verifyMfa({ mfaToken, code }) {
     throw new Error('Invalid token');
   }
   const tenantId = payload.tenantId;
-  return withTenant(tenantId, async client => {
-    const { rows: mfaRows } = await client.query('SELECT * FROM mfa WHERE user_id = $1 AND tenant_id = $2', [payload.userId, tenantId]);
-    const mfa = mfaRows[0];
-    if (!mfa) throw new Error('MFA not enrolled');
-    const valid = verifyTotp(mfa.secret, code);
-    if (!valid) throw new Error('Invalid code');
-    const { rows: userRows } = await client.query('SELECT role FROM users WHERE id = $1 AND tenant_id = $2', [payload.userId, tenantId]);
-    const user = userRows[0];
-    const accessToken = generateAccessToken(payload.userId, user.role, tenantId);
-    const refreshToken = generateRefreshToken();
-    const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
-    await client.query('INSERT INTO refresh_tokens (token, user_id, expires_at, tenant_id) VALUES ($1, $2, $3, $4)', [refreshToken, payload.userId, expiresAt, tenantId]);
-    return { accessToken, refreshToken, role: user.role };
+  const { data: mfa, error: mfaErr } = await supabase
+    .from('mfa')
+    .select('*')
+    .eq('user_id', payload.userId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (mfaErr) throw mfaErr;
+  if (!mfa) throw new Error('MFA not enrolled');
+  const valid = verifyTotp(mfa.secret, code);
+  if (!valid) throw new Error('Invalid code');
+  const { data: user } = await supabase
+    .from('users')
+    .select('role')
+    .eq('id', payload.userId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  const accessToken = generateAccessToken(payload.userId, user.role, tenantId);
+  const refreshToken = generateRefreshToken();
+  const expiresAt = Math.floor(Date.now() / 1000) + REFRESH_EXPIRES_SECONDS;
+  await supabase.from('refresh_tokens').insert({
+    token: refreshToken,
+    user_id: payload.userId,
+    expires_at: expiresAt,
+    tenant_id: tenantId
   });
+  return { accessToken, refreshToken, role: user.role };
 }
