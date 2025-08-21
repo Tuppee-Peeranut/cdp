@@ -8,7 +8,8 @@ export default function RoleGuard({ role, children }) {
     return null;
   }
 
-  const userRole = user?.profile?.role || 'user';
+  const userRole =
+    user?.user_metadata?.role || user?.app_metadata?.role || 'user';
   const allowed = Array.isArray(role) ? role : [role];
   if (allowed.length && !allowed.includes(userRole)) {
     return <div className="p-4 text-red-500">Access denied</div>;

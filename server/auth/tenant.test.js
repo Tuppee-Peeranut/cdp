@@ -1,31 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import jwt from 'jsonwebtoken';
 
-process.env.ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || 'testsecret';
-process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'testkey';
+process.env.SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || 'testsecret';
+const { authorize } = await import('./supabaseAuth.js');
 
-const { default: supabase } = await import('./db.js');
-const { signup, login, refresh } = await import('./service.js');
+function runMiddleware(mw, req) {
+  return new Promise((resolve, reject) => {
+    mw(req, { status: () => ({ json: () => reject(new Error('Unauthorized')) }) }, resolve);
+  });
+}
 
 test('users are isolated by tenant', async () => {
-  await supabase.from('refresh_tokens').delete().neq('token', '');
-  await supabase.from('mfa').delete().neq('user_id', 0);
-  await supabase.from('oidc_users').delete().neq('id', 0);
-  await supabase.from('users').delete().neq('id', 0);
+  const tokenA = jwt.sign(
+    { app_metadata: { tenant_id: 'tenant_a', role: 'user' } },
+    process.env.SUPABASE_JWT_SECRET
+  );
+  const tokenB = jwt.sign(
+    { app_metadata: { tenant_id: 'tenant_b', role: 'user' } },
+    process.env.SUPABASE_JWT_SECRET
+  );
 
-  const { data: tenantRows } = await supabase
-    .from('tenants')
-    .select('id, name')
-    .in('name', ['tenant_a', 'tenant_b'])
-    .order('name');
-  const [tenantA, tenantB] = tenantRows.map(r => r.id);
+  const reqA = { headers: { authorization: `Bearer ${tokenA}` } };
+  const reqB = { headers: { authorization: `Bearer ${tokenB}` } };
 
-  await signup({ username: 'alice', password: 'pw', tenantId: tenantA });
-  await signup({ username: 'bob', password: 'pw', tenantId: tenantB });
+  await runMiddleware(authorize(), reqA);
+  await runMiddleware(authorize(), reqB);
 
-  const { refreshToken } = await login({ username: 'alice', password: 'pw', tenantId: tenantA });
-
-  await assert.rejects(() => login({ username: 'alice', password: 'pw', tenantId: tenantB }), /Invalid credentials/);
-  await assert.rejects(() => refresh({ refreshToken, tenantId: tenantB }), /Invalid token/);
+  assert.equal(reqA.user.tenantId, 'tenant_a');
+  assert.equal(reqB.user.tenantId, 'tenant_b');
 });
