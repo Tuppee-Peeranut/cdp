@@ -67,7 +67,14 @@ app.use('/auth/graphql', (req, res) =>
 );
 app.post('/api/chat', authorize('admin'), openaiProxy);
 
+app.get('/csrf-token', (req, res) => {
+  res.json({ csrfToken: req.session.csrfToken });
+});
+
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+
+console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+console.log("SUPABASE_SERVICE_ROLE_KEY:", process.env.SUPABASE_SERVICE_ROLE_KEY ? "Loaded ✅" : "Missing ❌");
