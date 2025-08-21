@@ -1,16 +1,39 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
+import Login from './Login.jsx';
+import Signup from './Signup.jsx';
 import './index.css';
 import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
 
-createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
+function Root() {
+  const path = window.location.pathname;
+  if (path === '/login') {
+    return (
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    );
+  }
+  if (path === '/signup') {
+    return (
+      <AuthProvider>
+        <Signup />
+      </AuthProvider>
+    );
+  }
+  return (
     <AuthProvider>
       <RoleGuard role="admin">
         <App />
       </RoleGuard>
     </AuthProvider>
-  </React.StrictMode>
+  );
+}
+
+createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <Root />
+  </React.StrictMode>,
 );

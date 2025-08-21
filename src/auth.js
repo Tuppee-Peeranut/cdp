@@ -4,6 +4,10 @@ export function login({ email, password }) {
   return supabase.auth.signInWithPassword({ email, password });
 }
 
+export function signup({ email, password }) {
+  return supabase.auth.signUp({ email, password });
+}
+
 export function loginWithSSO(provider) {
   return supabase.auth.signInWithOAuth({ provider });
 }

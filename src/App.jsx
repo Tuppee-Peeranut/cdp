@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { login, logout, loginWithSSO } from './auth.js';
+import { logout } from './auth.js';
 import { supabase } from './supabaseClient.js';
 import { useAuth } from './AuthContext.jsx';
 import {
@@ -486,7 +486,6 @@ export default function App() {
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
   const [accessToken, setAccessToken] = useState(null);
-  const [loginData, setLoginData] = useState({ email: "", password: "" });
   const { user } = useAuth();
 
   useEffect(() => {
@@ -505,11 +504,6 @@ export default function App() {
     const id = uid("toast");
     setToasts((ts) => [...ts, { id, msg }]);
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
-  };
-
-  const handleLogin = async () => {
-    const { error } = await login(loginData);
-    if (error) addToast(error.message);
   };
 
   const handleLogout = async () => {
@@ -583,21 +577,8 @@ export default function App() {
               <button onClick={handleLogout} className="underline">Logout</button>
             ) : (
               <>
-                <input
-                  value={loginData.email}
-                  onChange={(e) => setLoginData((d) => ({ ...d, email: e.target.value }))}
-                  placeholder="Email"
-                  className="border rounded px-1 py-0.5"
-                />
-                <input
-                  type="password"
-                  value={loginData.password}
-                  onChange={(e) => setLoginData((d) => ({ ...d, password: e.target.value }))}
-                  placeholder="Password"
-                  className="border rounded px-1 py-0.5"
-                />
-                <button onClick={handleLogin} className="underline">Login</button>
-                <button onClick={() => loginWithSSO('google')} className="underline">SSO</button>
+                <a href="/login" className="underline">Login</a>
+                <a href="/signup" className="underline">Sign up</a>
               </>
             )}
           </div>
