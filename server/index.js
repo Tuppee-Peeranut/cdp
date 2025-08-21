@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import session from 'express-session';
@@ -11,6 +12,7 @@ import openaiProxy from './openaiProxy.js';
 import { authorize } from './auth/roles.js';
 
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
+console.log('Supabase URL:', process.env.SUPABASE_URL);
 
 const sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
