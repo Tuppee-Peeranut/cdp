@@ -1,23 +1,24 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { getUser } from './oidc.js';
+import { supabase } from './supabaseClient.js';
 
-const AuthContext = createContext({ user: undefined, setUser: () => {} });
+const AuthContext = createContext({ user: null });
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(undefined);
+  const [user, setUser] = useState(null);
 
   useEffect(() => {
-    getUser().then(setUser).catch(() => setUser(null));
+    supabase.auth.getUser().then(({ data: { user } }) => setUser(user));
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
   }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, setUser }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={{ user }}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
   return useContext(AuthContext);
 }
-

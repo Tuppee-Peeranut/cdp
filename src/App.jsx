@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { login as oidcLogin, logout as oidcLogout } from './oidc.js';
+import React, { useEffect, useMemo, useState } from "react";
+import { login, logout, loginWithSSO } from './auth.js';
+import { supabase } from './supabaseClient.js';
 import { useAuth } from './AuthContext.jsx';
 import {
   Upload,
@@ -129,7 +130,6 @@ const STORAGE_KEYS = {
   apiKey: "dbulk.openai_api_key",
   model: "dbulk.openai_model",
   accessToken: "dbulk.access_token",
-  refreshToken: "dbulk.refresh_token",
 };
 
 function uid(prefix = "id") {
@@ -285,7 +285,7 @@ function validateWithRules(rows, rulesets, domain) {
 }
 
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
-async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refreshToken) {
+async function askOpenAI(apiKey, model, userPrompt, context, accessToken) {
   const sys = `You are dP Copilot, a careful data platform assistant.
 - Explain validations and suggest fixes succinctly.
 - Never fabricate banking details.
@@ -299,24 +299,14 @@ async function askOpenAI(apiKey, model, userPrompt, context, accessToken, refres
     ],
     temperature: 0.2,
   };
-  const doFetch = (token) =>
-    fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-
-  let res = await doFetch(accessToken);
-
-  if (res.status === 401 && typeof refreshToken === "function") {
-    const newToken = await refreshToken();
-    if (newToken) {
-      res = await doFetch(newToken);
-    }
-  }
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
 
   if (!res.ok) {
     const t = await res.text();
@@ -495,12 +485,21 @@ export default function App() {
   ]);
   const [active, setActive] = useState("customers"); // active view
   const [toasts, setToasts] = useState([]);
-  const [accessToken, setAccessToken] = useState(() => localStorage.getItem(STORAGE_KEYS.accessToken));
-  const [refreshTokenValue, setRefreshTokenValue] = useState(() => localStorage.getItem(STORAGE_KEYS.refreshToken));
-  const [mfaToken, setMfaToken] = useState(null);
-  const [loginData, setLoginData] = useState({ username: "", password: "", code: "" });
-  const csrfTokenRef = useRef("");
+  const [accessToken, setAccessToken] = useState(null);
+  const [loginData, setLoginData] = useState({ email: "", password: "" });
   const { user } = useAuth();
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setAccessToken(session?.access_token ?? null);
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccessToken(session?.access_token ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   const addToast = (msg) => {
     const id = uid("toast");
@@ -508,95 +507,14 @@ export default function App() {
     setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3000);
   };
 
-  const fetchCsrfToken = async () => {
-    try {
-      const res = await fetch('/auth/csrf');
-      const data = await res.json();
-      csrfTokenRef.current = data.csrfToken;
-    } catch (err) {
-      console.error('Failed to fetch CSRF token', err);
-    }
-  };
-
-  useEffect(() => {
-    (async () => {
-      await fetchCsrfToken();
-      await refreshToken();
-    })();
-  }, []);
-
   const handleLogin = async () => {
-    const query = `mutation Login($u:String!, $p:String!){ login(username:$u, password:$p){ accessToken refreshToken mfaRequired mfaToken } }`;
-    const res = await fetch('/auth/graphql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
-      body: JSON.stringify({ query, variables: { u: loginData.username, p: loginData.password } })
-    });
-    const result = await res.json();
-    const data = result.data?.login;
-    if (data?.mfaRequired) {
-      setMfaToken(data.mfaToken);
-    } else if (data?.accessToken) {
-      setAccessToken(data.accessToken);
-      setRefreshTokenValue(data.refreshToken);
-      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
-      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
-      await fetchCsrfToken();
-    }
-  };
-
-  const handleVerify = async () => {
-    const query = `mutation Verify($t:String!, $c:String!){ verifyMfa(mfaToken:$t, code:$c){ accessToken refreshToken } }`;
-    const res = await fetch('/auth/graphql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
-      body: JSON.stringify({ query, variables: { t: mfaToken, c: loginData.code } })
-    });
-    const result = await res.json();
-    const data = result.data?.verifyMfa;
-    if (data?.accessToken) {
-      setAccessToken(data.accessToken);
-      setRefreshTokenValue(data.refreshToken);
-      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
-      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
-      setMfaToken(null);
-      setLoginData({ username: "", password: "", code: "" });
-      await fetchCsrfToken();
-    }
+    const { error } = await login(loginData);
+    if (error) addToast(error.message);
   };
 
   const handleLogout = async () => {
+    await logout();
     setAccessToken(null);
-    setRefreshTokenValue(null);
-    localStorage.removeItem(STORAGE_KEYS.accessToken);
-    localStorage.removeItem(STORAGE_KEYS.refreshToken);
-    await fetchCsrfToken();
-  };
-
-  const refreshToken = async () => {
-    const rt = refreshTokenValue || localStorage.getItem(STORAGE_KEYS.refreshToken);
-    if (!rt) return null;
-    const query = `mutation Refresh($rt:String!){ refresh(refreshToken:$rt){ accessToken refreshToken } }`;
-    const res = await fetch('/auth/graphql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenRef.current },
-      body: JSON.stringify({ query, variables: { rt } })
-    });
-    const result = await res.json();
-    const data = result.data?.refresh;
-    if (data?.accessToken) {
-      setAccessToken(data.accessToken);
-      setRefreshTokenValue(data.refreshToken);
-      localStorage.setItem(STORAGE_KEYS.accessToken, data.accessToken);
-      localStorage.setItem(STORAGE_KEYS.refreshToken, data.refreshToken);
-      await fetchCsrfToken();
-      return data.accessToken;
-    }
-    setAccessToken(null);
-    setRefreshTokenValue(null);
-    localStorage.removeItem(STORAGE_KEYS.accessToken);
-    localStorage.removeItem(STORAGE_KEYS.refreshToken);
-    return null;
   };
 
   const addDomain = () => {
@@ -660,43 +578,26 @@ export default function App() {
         </div>
         <div className="flex items-center gap-4 text-xs text-neutral-500">
           <div className="flex items-center gap-2">
-            <span>OIDC:</span>
-            {user ? (
-              <button onClick={oidcLogout} className="underline">Logout</button>
-            ) : (
-              <button onClick={oidcLogin} className="underline">Login</button>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <span>API:</span>
+            <span>Auth:</span>
             {accessToken ? (
               <button onClick={handleLogout} className="underline">Logout</button>
-            ) : mfaToken ? (
-              <>
-                <input
-                  value={loginData.code}
-                  onChange={(e) => setLoginData((d) => ({ ...d, code: e.target.value }))}
-                  placeholder="MFA code"
-                  className="border rounded px-1 py-0.5"
-                />
-                <button onClick={handleVerify} className="underline">Verify</button>
-              </>
             ) : (
               <>
                 <input
-                  value={loginData.username}
-                  onChange={(e) => setLoginData((d) => ({ ...d, username: e.target.value }))}
-                  placeholder="User"
+                  value={loginData.email}
+                  onChange={(e) => setLoginData((d) => ({ ...d, email: e.target.value }))}
+                  placeholder="Email"
                   className="border rounded px-1 py-0.5"
                 />
                 <input
                   type="password"
                   value={loginData.password}
                   onChange={(e) => setLoginData((d) => ({ ...d, password: e.target.value }))}
-                  placeholder="Pass"
+                  placeholder="Password"
                   className="border rounded px-1 py-0.5"
                 />
                 <button onClick={handleLogin} className="underline">Login</button>
+                <button onClick={() => loginWithSSO('google')} className="underline">SSO</button>
               </>
             )}
           </div>
@@ -1104,7 +1005,7 @@ function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, ap
           : null,
       };
       let answer = "(No API key set. Go to Settings to add an OpenAI key.)";
-      answer = await askOpenAI(apiKey, model, question, ctx, accessToken, refreshToken);
+      answer = await askOpenAI(apiKey, model, question, ctx, accessToken);
       setMessages((m) => [...m, { role: "assistant", type: "text", content: answer }]);
     } catch (err) {
       setMessages((m) => [...m, { role: "assistant", type: "text", content: String(err?.message || err) }]);
