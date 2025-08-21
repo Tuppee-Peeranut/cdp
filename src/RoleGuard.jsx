@@ -8,6 +8,11 @@ export default function RoleGuard({ role, children }) {
     return null;
   }
 
+  if (!user) {
+    window.location.href = '/login';
+    return null;
+  }
+
   const userRole =
     user?.user_metadata?.role || user?.app_metadata?.role || 'user';
   const allowed = Array.isArray(role) ? role : [role];
