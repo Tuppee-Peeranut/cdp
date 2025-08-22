@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
+    "start": "node server/index.js",
+    "prestart": "node checkEnv.js",
     "test": "node --test server/auth/*.test.js"
   },
   "dependencies": {
