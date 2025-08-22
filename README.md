@@ -21,6 +21,12 @@ The server expects the following variables to be set before it starts:
 - `ACCESS_TOKEN_SECRET` – secret used to sign JSON Web Tokens.
 - `SESSION_SECRET` – secret for Express session encryption.
 
+For Supabase authentication, set the following variables in your `.env`:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `VITE_SUPABASE_REDIRECT_URL` – URL Supabase uses after email confirmation. Make sure this URL is whitelisted in your Supabase project settings for each environment.
+
 See the **OIDC Configuration** section for additional variables when using an identity provider.
 
 ## Features

@@ -9,7 +9,7 @@ export function signup({ email, password }) {
     email,
     password,
     options: {
-      emailRedirectTo: window.location.origin,
+      emailRedirectTo: import.meta.env.VITE_SUPABASE_REDIRECT_URL,
       data: { role: 'admin' },
     },
 
