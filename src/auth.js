@@ -5,7 +5,11 @@ export function login({ email, password }) {
 }
 
 export function signup({ email, password }) {
-  return supabase.auth.signUp({ email, password });
+  return supabase.auth.signUp({
+    email,
+    password,
+    options: { emailRedirectTo: `${window.location.origin}/` },
+  });
 }
 
 export function loginWithSSO(provider) {
