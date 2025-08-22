@@ -9,6 +9,7 @@ export function signup({ email, password }) {
     email,
     password,
     options: { emailRedirectTo: window.location.origin },
+
   });
 }
 
