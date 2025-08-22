@@ -7,15 +7,28 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    console.log('[Login] form submit', { email: form.email });
     setError('');
-    const { error } = await login(form);
-    if (error) {
-      if (error.message && error.message.toLowerCase().includes('email not confirmed')) {
-        setError('Please verify your email before logging in.');
+    try {
+      const { data, error } = await login(form);
+      console.log('[Login] login response', { data, error });
+      if (error) {
+        console.error('[Login] login error', error);
+        if (
+          error.message &&
+          error.message.toLowerCase().includes('email not confirmed')
+        ) {
+          setError('Please verify your email before logging in.');
+        } else {
+          setError(error.message);
+        }
       } else {
-        setError(error.message);
+        window.location.href = '/';
       }
-    } else window.location.href = '/';
+    } catch (err) {
+      console.error('[Login] unexpected error', err);
+      setError(err.message);
+    }
   };
 
   return (

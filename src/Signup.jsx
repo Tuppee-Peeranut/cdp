@@ -8,10 +8,21 @@ export default function Signup() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    console.log('[Signup] form submit', { email: form.email });
     setError('');
-    const { error } = await signup(form);
-    if (error) setError(error.message);
-    else setSuccess(true);
+    try {
+      const { data, error } = await signup(form);
+      console.log('[Signup] signup response', { data, error });
+      if (error) {
+        console.error('[Signup] signup error', error);
+        setError(error.message);
+      } else {
+        setSuccess(true);
+      }
+    } catch (err) {
+      console.error('[Signup] unexpected error', err);
+      setError(err.message);
+    }
   };
 
   return (
