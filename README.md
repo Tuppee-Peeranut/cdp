@@ -14,6 +14,18 @@ npm run dev
 ```
 In **Settings**, paste your OpenAI API Key to enable the **Ask** feature.
 
+## Supabase Setup
+
+1. Sign up at [Supabase](https://supabase.com/) and create a project.
+2. From the project dashboard copy the **Project URL** and **anon public key**.
+3. Create a `.env` file in the project root containing:
+
+   ```bash
+   VITE_SUPABASE_URL=https://your-project.supabase.co
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+4. Restart the dev server after adding these variables.
+
 ## Environment Variables
 
 The server expects the following variables to be set before it starts:
