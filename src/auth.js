@@ -8,7 +8,10 @@ export function signup({ email, password }) {
   return supabase.auth.signUp({
     email,
     password,
-    options: { emailRedirectTo: window.location.origin },
+    options: {
+      emailRedirectTo: window.location.origin,
+      data: { role: 'admin' },
+    },
 
   });
 }
