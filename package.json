@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "server": "node server/index.js",
-    "test": "node --test server/auth/tenant.test.js"
+    "test": "node --test server/auth/*.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.42.0",

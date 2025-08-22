@@ -26,6 +26,7 @@ For Supabase authentication, set the following variables in your `.env`:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
 - `VITE_SUPABASE_REDIRECT_URL` – URL Supabase uses after email confirmation. Make sure this URL is whitelisted in your Supabase project settings for each environment.
+- `SUPABASE_JWT_SECRET` – secret used to verify Supabase JWTs. Tokens must be signed with the `HS256` algorithm.
 
 See the **OIDC Configuration** section for additional variables when using an identity provider.
 
