@@ -9,8 +9,13 @@ export default function Login() {
     e.preventDefault();
     setError('');
     const { error } = await login(form);
-    if (error) setError(error.message);
-    else window.location.href = '/';
+    if (error) {
+      if (error.message && error.message.toLowerCase().includes('email not confirmed')) {
+        setError('Please verify your email before logging in.');
+      } else {
+        setError(error.message);
+      }
+    } else window.location.href = '/';
   };
 
   return (
