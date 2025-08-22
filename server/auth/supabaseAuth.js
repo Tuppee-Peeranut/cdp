@@ -12,7 +12,7 @@ export function authorize(required = []) {
     const token = authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
     try {
-      const payload = jwt.verify(token, JWT_SECRET);
+      const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
       const role =
         payload?.user_metadata?.role || payload?.app_metadata?.role || payload.role || 'user';
       const tenantId =
