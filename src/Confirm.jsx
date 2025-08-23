@@ -32,9 +32,11 @@ export default function Confirm() {
               user?.app_metadata?.role ||
               'user',
             tenant_id:
-              user?.user_metadata?.tenant_id ||
-              user?.app_metadata?.tenant_id ||
-              null,
+
+              user?.user_metadata?.tenant_id ??
+              user?.app_metadata?.tenant_id ??
+              1,
+
           },
           { onConflict: 'id' }
         );
