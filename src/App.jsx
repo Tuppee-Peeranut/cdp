@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { logout } from './auth.js';
 import { supabase } from './supabaseClient.js';
 import { useAuth } from './AuthContext.jsx';
