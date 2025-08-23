@@ -21,29 +21,76 @@ export async function seedSuperAdmin(client = supabaseAdmin) {
   }
 }
 
-export async function createUser({ email, password, role = 'user', tenantId }, client = supabaseAdmin) {
+export async function createUser(
+  {
+    email,
+    password,
+    role = 'user',
+    tenantId,
+    profileUrl,
+    phone,
+    locale,
+    consents,
+    lastLoginAt,
+    deletedAt
+  },
+  client = supabaseAdmin
+) {
+  const meta = { role, tenant_id: tenantId };
+  if (profileUrl) meta.profile_url = profileUrl;
+  if (locale) meta.locale = locale;
+  if (consents !== undefined) meta.consents = consents;
+  if (lastLoginAt) meta.last_login_at = lastLoginAt;
+  if (deletedAt) meta.deleted_at = deletedAt;
   return client.auth.admin.createUser({
     email,
     password,
+    phone,
     email_confirm: true,
-    user_metadata: { role, tenant_id: tenantId }
+    user_metadata: meta
   });
 }
 
-export async function updateUser(id, { email, password, role, tenantId, disabled }, client = supabaseAdmin) {
+export async function updateUser(
+  id,
+  {
+    email,
+    password,
+    role,
+    tenantId,
+    disabled,
+    profileUrl,
+    phone,
+    locale,
+    consents,
+    lastLoginAt,
+    deletedAt
+  },
+  client = supabaseAdmin
+) {
   const attrs = {};
   if (email) attrs.email = email;
   if (password) attrs.password = password;
+  if (phone) attrs.phone = phone;
   const meta = {};
   if (role) meta.role = role;
   if (tenantId) meta.tenant_id = tenantId;
   if (disabled !== undefined) meta.disabled = disabled;
+  if (profileUrl) meta.profile_url = profileUrl;
+  if (locale) meta.locale = locale;
+  if (consents !== undefined) meta.consents = consents;
+  if (lastLoginAt) meta.last_login_at = lastLoginAt;
+  if (deletedAt) meta.deleted_at = deletedAt;
   if (Object.keys(meta).length) attrs.user_metadata = meta;
   return client.auth.admin.updateUserById(id, attrs);
 }
 
 export async function deleteUser(id, client = supabaseAdmin) {
-  return client.auth.admin.deleteUser(id);
+  return updateUser(
+    id,
+    { deletedAt: new Date().toISOString(), disabled: true },
+    client
+  );
 }
 
 export const disableUser = (id, client = supabaseAdmin) => updateUser(id, { disabled: true }, client);
