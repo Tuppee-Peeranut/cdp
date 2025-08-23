@@ -491,12 +491,14 @@ export default function App() {
     user?.user_metadata?.tenant_id ?? user?.app_metadata?.tenant_id;
 
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showFeaturePreview, setShowFeaturePreview] = useState(false);
   const menuRef = useRef(null);
 
   useEffect(() => {
     const handleClick = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
         setShowUserMenu(false);
+        setShowFeaturePreview(false);
       }
     };
     document.addEventListener("mousedown", handleClick);
@@ -593,7 +595,10 @@ export default function App() {
           {accessToken ? (
             <div className="relative" ref={menuRef}>
               <button
-                onClick={() => setShowUserMenu((s) => !s)}
+                onClick={() => {
+                  setShowUserMenu((s) => !s);
+                  setShowFeaturePreview(false);
+                }}
                 className="w-8 h-8 rounded-full bg-neutral-300 overflow-hidden flex items-center justify-center"
               >
                 {user?.user_metadata?.avatar_url ? (
@@ -635,9 +640,22 @@ export default function App() {
                     <button className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100">
                       Account Preference
                     </button>
-                    <button className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100">
+                    <button
+                      onClick={() => setShowFeaturePreview((s) => !s)}
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100"
+                    >
                       Feature Preview
                     </button>
+                    {showFeaturePreview && (
+                      <div className="border-t border-neutral-200">
+                        <SettingsPanel
+                          apiKey={apiKey}
+                          setApiKey={setApiKey}
+                          model={model}
+                          setModel={setModel}
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="py-1">
                     <button
@@ -694,7 +712,6 @@ export default function App() {
                   />
                 );
               })}
-              <SidebarButton icon={SettingsIcon} label="Settings" active={active === "settings"} onClick={() => setActive("settings")} />
             </div>
           <div className="text-xs uppercase tracking-wide text-neutral-500 px-2 mt-4 mb-2">Recent Tasks</div>
           <TaskMini tasks={tasks} />
@@ -702,9 +719,7 @@ export default function App() {
 
         {/* Main */}
         <main className="flex-1 min-h-[calc(100vh-3rem)]">
-          {active === "settings" ? (
-            <SettingsPanel apiKey={apiKey} setApiKey={setApiKey} model={model} setModel={setModel} />
-          ) : rulesets.find((r) => r.id === active) ? (
+          {rulesets.find((r) => r.id === active) ? (
             <RuleEditor
               rule={rulesets.find((r) => r.id === active)}
               updateRule={updateRule}
@@ -897,10 +912,10 @@ function RuleEditor({ rule, updateRule, deleteRule, domains }) {
 
 function SettingsPanel({ apiKey, setApiKey, model, setModel }) {
   return (
-    <div className="max-w-2xl mx-auto p-6">
+    <div className="p-4">
       <div className="mb-4 flex items-center gap-2">
         <SettingsIcon size={18} className="text-neutral-600" />
-        <h2 className="text-lg font-semibold">Settings</h2>
+        <h2 className="text-lg font-semibold">AI Model</h2>
       </div>
 
       <Field label="OpenAI API Key (temporary BYOK)">
@@ -1059,7 +1074,7 @@ function TransferChat({ domain, kind, rulesets, setRulesets, tasks, setTasks, ap
             }
           : null,
       };
-      let answer = "(No API key set. Go to Settings to add an OpenAI key.)";
+      let answer = "(No API key set. Go to Feature Preview to add an OpenAI key.)";
       answer = await askOpenAI(apiKey, model, question, ctx, accessToken);
       setMessages((m) => [...m, { role: "assistant", type: "text", content: answer }]);
     } catch (err) {
