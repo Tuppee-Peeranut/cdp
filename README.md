@@ -12,7 +12,7 @@ npm install
 npm run dev
 # open the printed localhost URL
 ```
-In **Settings**, paste your OpenAI API Key to enable the **Ask** feature.
+In the profile menu's **Feature Preview**, paste your OpenAI API Key to enable the **Ask** feature.
 
 ## Supabase Setup
 
