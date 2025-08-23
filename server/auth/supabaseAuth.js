@@ -18,9 +18,9 @@ export function authorize(required = []) {
       const tenantId =
         payload?.user_metadata?.tenant_id || payload?.app_metadata?.tenant_id || null;
       req.user = { id: payload.sub, role, tenantId };
-      if (requiredRoles.length && !requiredRoles.includes(role)) {
-        return res.status(403).json({ error: 'Forbidden' });
-      }
+        if (role !== 'super_admin' && requiredRoles.length && !requiredRoles.includes(role)) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
       next();
     } catch (err) {
       res.status(401).json({ error: 'Unauthorized' });
