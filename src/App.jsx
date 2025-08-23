@@ -489,6 +489,7 @@ export default function App() {
   const { user } = useAuth();
   const tenantId =
     user?.user_metadata?.tenant_id ?? user?.app_metadata?.tenant_id;
+  const [tenantName, setTenantName] = useState(null);
 
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showFeaturePreview, setShowFeaturePreview] = useState(false);
@@ -516,6 +517,21 @@ export default function App() {
     });
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!tenantId) {
+      setTenantName(null);
+      return;
+    }
+    supabase
+      .from('tenants')
+      .select('name')
+      .eq('id', tenantId)
+      .single()
+      .then(({ data, error }) => {
+        if (!error) setTenantName(data?.name || null);
+      });
+  }, [tenantId]);
 
   const addToast = (msg) => {
     const id = uid("toast");
@@ -587,7 +603,7 @@ export default function App() {
           <div className="font-semibold">dP</div>
           {tenantId && (
             <button className="px-3 py-0.5 rounded-full border border-neutral-300 text-xs text-neutral-700">
-              {tenantId}
+              {tenantName || tenantId}
             </button>
           )}
         </div>
