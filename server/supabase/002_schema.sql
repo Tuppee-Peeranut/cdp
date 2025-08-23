@@ -15,6 +15,14 @@ CREATE TABLE tenants (
   settings jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Seed initial tenants
+INSERT INTO tenants (id, name) VALUES
+  ('00000000-0000-0000-0000-000000000001', 'tenant_1'),
+  ('00000000-0000-0000-0000-000000000002', 'tenant_2'),
+  ('00000000-0000-0000-0000-000000000003', 'tenant_3'),
+  ('00000000-0000-0000-0000-000000000004', 'tenant_4'),
+  ('00000000-0000-0000-0000-000000000005', 'tenant_5');
+
 -- Create users table linked to auth.users and tenants
 CREATE TABLE users (
   id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
