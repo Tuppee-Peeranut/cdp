@@ -20,7 +20,7 @@ export async function signup({ email, password, tenantId }) {
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/confirm`,
-        data: { role: 'admin', tenant_id: tenantId ?? 1 },
+        data: { role: 'admin', tenant_id: tenantId ?? '00000000-0000-0000-0000-000000000001' },
       },
     });
     console.log('[Auth] signup response', res);
