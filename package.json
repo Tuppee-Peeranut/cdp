@@ -3,15 +3,16 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "server": "node server/index.js",
-    "start": "node server/index.js",
-    "prestart": "node checkEnv.js",
-    "test": "node --test server/auth/*.test.js"
-  },
+    "scripts": {
+      "dev": "vite",
+      "build": "vite build",
+      "preview": "vite preview",
+      "server": "node server/index.js",
+      "start": "node server/index.js",
+      "prestart": "node checkEnv.js",
+      "test": "node --test server/auth/*.test.js",
+      "seed:superadmin": "node server/auth/seedSuperAdmin.js"
+    },
   "dependencies": {
     "@supabase/supabase-js": "^2.42.0",
     "cors": "^2.8.5",
