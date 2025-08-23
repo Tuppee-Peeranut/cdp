@@ -7,7 +7,12 @@ DROP TABLE IF EXISTS tenants CASCADE;
 -- Create tenants table
 CREATE TABLE tenants (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text UNIQUE
+  name text UNIQUE,
+  subscription_start timestamptz,
+  subscription_end timestamptz,
+  active_plan text,
+  trial boolean NOT NULL DEFAULT false,
+  settings jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
 -- Create users table linked to auth.users and tenants
