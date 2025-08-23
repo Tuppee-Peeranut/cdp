@@ -17,6 +17,7 @@ INSERT INTO tenants (id, name) VALUES
   ('00000000-0000-0000-0000-000000000005', 'tenant_5')
 ON CONFLICT (id) DO NOTHING;
 
+
 -- Add tenant_id to users and related tables, dropping conflicting columns first
 ALTER TABLE users DROP COLUMN IF EXISTS tenant_id;
 ALTER TABLE users ADD COLUMN tenant_id UUID REFERENCES tenants(id);
@@ -42,6 +43,7 @@ UPDATE mfa
   SET tenant_id = (
     SELECT tenant_id FROM users WHERE users.id::text = mfa.user_id::text
   );
+
 ALTER TABLE mfa ALTER COLUMN tenant_id SET NOT NULL;
 
 -- Enable Row Level Security
