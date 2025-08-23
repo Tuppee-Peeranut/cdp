@@ -13,11 +13,11 @@ function runMiddleware(mw, req) {
 
 test('users are isolated by tenant', async () => {
   const tokenA = jwt.sign(
-    { app_metadata: { tenant_id: 'tenant_a', role: 'user' } },
+    { app_metadata: { tenant_id: 'tenant_1', role: 'user' } },
     process.env.SUPABASE_JWT_SECRET
   );
   const tokenB = jwt.sign(
-    { app_metadata: { tenant_id: 'tenant_b', role: 'user' } },
+    { app_metadata: { tenant_id: 'tenant_2', role: 'user' } },
     process.env.SUPABASE_JWT_SECRET
   );
 
@@ -27,6 +27,6 @@ test('users are isolated by tenant', async () => {
   await runMiddleware(authorize(), reqA);
   await runMiddleware(authorize(), reqB);
 
-  assert.equal(reqA.user.tenantId, 'tenant_a');
-  assert.equal(reqB.user.tenantId, 'tenant_b');
+  assert.equal(reqA.user.tenantId, 'tenant_1');
+  assert.equal(reqB.user.tenantId, 'tenant_2');
 });
