@@ -4,9 +4,13 @@ const SEED_EMAIL = 'skywalker@example.com';
 const SEED_PASSWORD = "i'my0urfather";
 
 export async function seedSuperAdmin(client = supabaseAdmin) {
-  const { data, error } = await client.auth.admin.getUserByEmail(SEED_EMAIL);
+  const { data, error } = await client.auth.admin.listUsers({
+    email: SEED_EMAIL,
+    page: 1,
+    perPage: 1
+  });
   if (error) throw error;
-  if (!data?.user) {
+  if (!data?.users?.length) {
     const { error: createError } = await client.auth.admin.createUser({
       email: SEED_EMAIL,
       password: SEED_PASSWORD,
