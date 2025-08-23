@@ -19,7 +19,7 @@ export async function signup({ email, password }) {
       email,
       password,
       options: {
-        emailRedirectTo: import.meta.env.VITE_SUPABASE_REDIRECT_URL,
+        emailRedirectTo: `${window.location.origin}/confirm`,
         data: { role: 'admin' },
       },
     });

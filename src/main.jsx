@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App.jsx';
 import Login from './Login.jsx';
 import Signup from './Signup.jsx';
+import Confirm from './Confirm.jsx';
 import './index.css';
 import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
@@ -20,6 +21,13 @@ function Root() {
     return (
       <AuthProvider>
         <Signup />
+      </AuthProvider>
+    );
+  }
+  if (path === '/confirm') {
+    return (
+      <AuthProvider>
+        <Confirm />
       </AuthProvider>
     );
   }
