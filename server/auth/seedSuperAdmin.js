@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { seedSuperAdmin } from './superAdmin.js';
 
 seedSuperAdmin()
