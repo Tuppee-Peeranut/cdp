@@ -23,13 +23,21 @@ export default function Confirm() {
         if (userError) throw userError;
         if (!user) throw new Error('User not found after confirmation');
 
-        const { error: upsertError } = await supabase.from('users').upsert({
-          id: user.id,
-          role:
-            user?.user_metadata?.role ||
-            user?.app_metadata?.role ||
-            'admin',
-        });
+        const { error: upsertError } = await supabase.from('users').upsert(
+          {
+            id: user.id,
+            username: user.email,
+            role:
+              user?.user_metadata?.role ||
+              user?.app_metadata?.role ||
+              'user',
+            tenant_id:
+              user?.user_metadata?.tenant_id ??
+              user?.app_metadata?.tenant_id ??
+              1,
+          },
+          { onConflict: 'id' }
+        );
         if (upsertError) throw upsertError;
 
         window.location.replace('/');

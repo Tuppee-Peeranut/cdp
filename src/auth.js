@@ -12,7 +12,7 @@ export async function login({ email, password }) {
   }
 }
 
-export async function signup({ email, password }) {
+export async function signup({ email, password, tenantId }) {
   console.log('[Auth] signup attempt', { email });
   try {
     const res = await supabase.auth.signUp({
@@ -20,7 +20,7 @@ export async function signup({ email, password }) {
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/confirm`,
-        data: { role: 'admin' },
+        data: { role: 'admin', tenant_id: tenantId ?? 1 },
       },
     });
     console.log('[Auth] signup response', res);
