@@ -490,6 +490,19 @@ export default function App() {
   const tenantId =
     user?.user_metadata?.tenant_id ?? user?.app_metadata?.tenant_id;
 
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setAccessToken(session?.access_token ?? null);
@@ -577,17 +590,72 @@ export default function App() {
           )}
         </div>
         <div className="flex items-center gap-4 text-xs text-neutral-500">
-          <div className="flex items-center gap-2">
-            <span>Auth:</span>
-            {accessToken ? (
-              <button onClick={handleLogout} className="underline">Logout</button>
-            ) : (
-              <>
-                <a href="/login" className="underline">Login</a>
-                <a href="/signup" className="underline">Sign up</a>
-              </>
-            )}
-          </div>
+          {accessToken ? (
+            <div className="relative" ref={menuRef}>
+              <button
+                onClick={() => setShowUserMenu((s) => !s)}
+                className="w-8 h-8 rounded-full bg-neutral-300 overflow-hidden flex items-center justify-center"
+              >
+                {user?.user_metadata?.avatar_url ? (
+                  <img
+                    src={user.user_metadata.avatar_url}
+                    alt="profile"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <span className="text-sm font-medium text-neutral-600">
+                    {user?.email?.[0]?.toUpperCase()}
+                  </span>
+                )}
+              </button>
+              {showUserMenu && (
+                <div className="absolute right-0 mt-2 w-56 bg-white rounded-md shadow-lg border border-neutral-200 text-neutral-700 z-50">
+                  <div className="p-4 border-b border-neutral-200 flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-neutral-300 overflow-hidden flex items-center justify-center">
+                      {user?.user_metadata?.avatar_url ? (
+                        <img
+                          src={user.user_metadata.avatar_url}
+                          alt="profile"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="text-sm font-medium text-neutral-600">
+                          {user?.email?.[0]?.toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium">
+                        {user?.user_metadata?.full_name ?? user?.email}
+                      </div>
+                      <div className="text-xs text-neutral-500">{user?.email}</div>
+                    </div>
+                  </div>
+                  <div className="py-1 border-b border-neutral-200">
+                    <button className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100">
+                      Account Preference
+                    </button>
+                    <button className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100">
+                      Feature Preview
+                    </button>
+                  </div>
+                  <div className="py-1">
+                    <button
+                      onClick={handleLogout}
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-neutral-100 text-red-600"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <a href="/login" className="underline">Login</a>
+              <a href="/signup" className="underline">Sign up</a>
+            </div>
+          )}
         </div>
       </div>
 
