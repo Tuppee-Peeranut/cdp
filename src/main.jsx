@@ -4,6 +4,7 @@ import App from './App.jsx';
 import Login from './Login.jsx';
 import Signup from './Signup.jsx';
 import Confirm from './Confirm.jsx';
+import SuperAdmin from './SuperAdmin.jsx';
 import './index.css';
 import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
@@ -31,9 +32,18 @@ function Root() {
       </AuthProvider>
     );
   }
+  if (path === '/superadmin') {
+    return (
+      <AuthProvider>
+        <RoleGuard role="super_admin">
+          <SuperAdmin />
+        </RoleGuard>
+      </AuthProvider>
+    );
+  }
   return (
     <AuthProvider>
-      <RoleGuard role="admin">
+      <RoleGuard role={["admin", "super_admin"]}>
         <App />
       </RoleGuard>
     </AuthProvider>
