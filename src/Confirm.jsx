@@ -35,7 +35,7 @@ export default function Confirm() {
 
               user?.user_metadata?.tenant_id ??
               user?.app_metadata?.tenant_id ??
-              1,
+              '00000000-0000-0000-0000-000000000001',
 
           },
           { onConflict: 'id' }
