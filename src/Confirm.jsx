@@ -25,11 +25,10 @@ export default function Confirm() {
 
         const { error: upsertError } = await supabase.from('users').upsert({
           id: user.id,
-          email: user.email,
           role:
             user?.user_metadata?.role ||
             user?.app_metadata?.role ||
-            'user',
+            'admin',
         });
         if (upsertError) throw upsertError;
 
