@@ -28,7 +28,7 @@ export default function Confirm() {
           role:
             user?.user_metadata?.role ||
             user?.app_metadata?.role ||
-            'user',
+            'admin',
         });
         if (upsertError) throw upsertError;
 
