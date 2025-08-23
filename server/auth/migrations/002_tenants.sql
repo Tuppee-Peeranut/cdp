@@ -18,7 +18,13 @@ UPDATE users SET tenant_id = (SELECT id FROM tenants WHERE name = 'tenant_a') WH
 ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL;
 
 ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-UPDATE refresh_tokens SET tenant_id = (SELECT tenant_id FROM users WHERE id = refresh_tokens.user_id) WHERE tenant_id IS NULL;
+
+UPDATE refresh_tokens
+  SET tenant_id = (
+    SELECT tenant_id FROM users WHERE users.id::text = refresh_tokens.user_id::text
+  )
+  WHERE tenant_id IS NULL;
+
 ALTER TABLE refresh_tokens ALTER COLUMN tenant_id SET NOT NULL;
 
 ALTER TABLE oidc_users ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
@@ -26,7 +32,13 @@ UPDATE oidc_users SET tenant_id = (SELECT id FROM tenants WHERE name = 'tenant_a
 ALTER TABLE oidc_users ALTER COLUMN tenant_id SET NOT NULL;
 
 ALTER TABLE mfa ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id);
-UPDATE mfa SET tenant_id = (SELECT tenant_id FROM users WHERE id = mfa.user_id) WHERE tenant_id IS NULL;
+
+UPDATE mfa
+  SET tenant_id = (
+    SELECT tenant_id FROM users WHERE users.id::text = mfa.user_id::text
+  )
+  WHERE tenant_id IS NULL;
+
 ALTER TABLE mfa ALTER COLUMN tenant_id SET NOT NULL;
 
 -- Enable Row Level Security
