@@ -7,9 +7,20 @@ export default function Confirm() {
   useEffect(() => {
     async function handleConfirm() {
       try {
-        const { error } = await supabase.auth.getSessionFromUrl({ storeSession: true });
-        if (error) throw error;
-        const { data: { user } } = await supabase.auth.getUser();
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get('code');
+        if (code) {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+          url.searchParams.delete('code');
+          window.history.replaceState({}, document.title, url.toString());
+        }
+
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+        if (userError) throw userError;
         if (user) {
           await supabase.from('users').upsert({ id: user.id, email: user.email });
         }
