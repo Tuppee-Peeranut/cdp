@@ -21,9 +21,17 @@ export default function Confirm() {
           error: userError,
         } = await supabase.auth.getUser();
         if (userError) throw userError;
-        if (user) {
-          await supabase.from('users').upsert({ id: user.id, email: user.email });
-        }
+        if (!user) throw new Error('User not found after confirmation');
+
+        const { error: upsertError } = await supabase.from('users').upsert({
+          id: user.id,
+          role:
+            user?.user_metadata?.role ||
+            user?.app_metadata?.role ||
+            'user',
+        });
+        if (upsertError) throw upsertError;
+
         window.location.replace('/');
       } catch (err) {
         console.error('[Confirm] error', err);
