@@ -5,6 +5,9 @@ export async function login({ email, password }) {
   try {
     const res = await supabase.auth.signInWithPassword({ email, password });
     console.log('[Auth] login response', res);
+    if (res.data?.user) {
+      await supabase.auth.updateUser({ data: { last_login_at: new Date().toISOString() } });
+    }
     return res;
   } catch (err) {
     console.error('[Auth] login error', err);
@@ -12,15 +15,22 @@ export async function login({ email, password }) {
   }
 }
 
-export async function signup({ email, password, tenantId }) {
+export async function signup({ email, password, tenantId, profileUrl, phone, locale, consents }) {
   console.log('[Auth] signup attempt', { email });
   try {
     const res = await supabase.auth.signUp({
       email,
       password,
+      phone,
       options: {
         emailRedirectTo: `${window.location.origin}/confirm`,
-        data: { role: 'admin', tenant_id: tenantId ?? '00000000-0000-0000-0000-000000000001' },
+        data: {
+          role: 'admin',
+          tenant_id: tenantId ?? '00000000-0000-0000-0000-000000000001',
+          profile_url: profileUrl,
+          locale,
+          consents
+        },
       },
     });
     console.log('[Auth] signup response', res);
