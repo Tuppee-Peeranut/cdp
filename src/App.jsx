@@ -487,6 +487,8 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [accessToken, setAccessToken] = useState(null);
   const { user } = useAuth();
+  const tenantId =
+    user?.user_metadata?.tenant_id ?? user?.app_metadata?.tenant_id;
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -568,7 +570,11 @@ export default function App() {
             <Zap size={14} className="text-emerald-700" />
           </div>
           <div className="font-semibold">dP</div>
-          <Badge tone="neutral">MVP</Badge>
+          {tenantId && (
+            <button className="px-3 py-0.5 rounded-full border border-neutral-300 text-xs text-neutral-700">
+              {tenantId}
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-4 text-xs text-neutral-500">
           <div className="flex items-center gap-2">
