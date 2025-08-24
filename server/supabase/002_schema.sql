@@ -15,6 +15,14 @@ CREATE TABLE tenants (
   settings jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Seed initial tenants
+INSERT INTO tenants (id, name) VALUES
+  ('00000000-0000-0000-0000-000000000001', 'tenant_1'),
+  ('00000000-0000-0000-0000-000000000002', 'tenant_2'),
+  ('00000000-0000-0000-0000-000000000003', 'tenant_3'),
+  ('00000000-0000-0000-0000-000000000004', 'tenant_4'),
+  ('00000000-0000-0000-0000-000000000005', 'tenant_5');
+
 -- Create users table linked to auth.users and tenants
 CREATE TABLE users (
   id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
@@ -39,11 +47,13 @@ CREATE POLICY users_select ON users
 CREATE POLICY users_update ON users
   FOR UPDATE USING (deleted_at IS NULL);
 
+
 CREATE POLICY users_insert ON users
   FOR INSERT WITH CHECK (deleted_at IS NULL);
 
 CREATE POLICY users_delete ON users
   FOR DELETE USING (deleted_at IS NULL);
+
 
 -- Convert deletes into soft deletes
 CREATE OR REPLACE FUNCTION soft_delete_users() RETURNS trigger AS $$
