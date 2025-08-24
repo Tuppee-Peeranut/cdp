@@ -1,5 +1,27 @@
 import { supabase } from './supabaseClient.js';
 
+// Ensure the Supabase user object contains a role. If the user metadata is
+// missing the role (which can happen if the role is only stored in the public
+// `users` table), fetch it from the table and merge it into the metadata. This
+// allows client-side code to consistently rely on `user.user_metadata.role`.
+export async function ensureUserRole(user) {
+  if (!user) return user;
+  const role = user?.user_metadata?.role || user?.app_metadata?.role;
+  if (role) return user;
+  const { data, error } = await supabase
+    .from('users')
+    .select('role')
+    .eq('id', user.id)
+    .single();
+  if (!error && data?.role) {
+    return {
+      ...user,
+      user_metadata: { ...user.user_metadata, role: data.role },
+    };
+  }
+  return user;
+}
+
 export async function login({ email, password }) {
   console.log('[Auth] login attempt', { email });
   try {

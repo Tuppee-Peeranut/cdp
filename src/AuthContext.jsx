@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from './supabaseClient.js';
+import { ensureUserRole } from './auth.js';
 
 // undefined represents the loading state before we know the current user
 const AuthContext = createContext({ user: undefined });
@@ -9,19 +10,21 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     console.log('[AuthContext] initializing');
-    supabase.auth.getUser().then(({ data: { user }, error }) => {
+    supabase.auth.getUser().then(async ({ data: { user }, error }) => {
       if (error) {
         console.error('[AuthContext] getUser error', error);
       } else {
         console.log('[AuthContext] getUser', user);
       }
-      setUser(user);
+      const enriched = await ensureUserRole(user);
+      setUser(enriched);
     });
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('[AuthContext] auth state change', { event, session });
-      setUser(session?.user ?? null);
+      const enriched = await ensureUserRole(session?.user ?? null);
+      setUser(enriched);
     });
     return () => {
       console.log('[AuthContext] unsubscribing');

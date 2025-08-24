@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { login } from './auth.js';
+import { login, ensureUserRole } from './auth.js';
 
 export default function Login() {
   const [form, setForm] = useState({ email: '', password: '' });
@@ -23,8 +23,9 @@ export default function Login() {
           setError(error.message);
         }
       } else {
+        const user = await ensureUserRole(data?.user);
         const role =
-          data?.user?.user_metadata?.role || data?.user?.app_metadata?.role;
+          user?.user_metadata?.role || user?.app_metadata?.role;
         window.location.href = role === 'super_admin' ? '/superadmin' : '/';
       }
     } catch (err) {
