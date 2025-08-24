@@ -43,7 +43,7 @@ function Root() {
   }
   return (
     <AuthProvider>
-      <RoleGuard role={["admin", "super_admin"]}>
+      <RoleGuard role="admin">
         <App />
       </RoleGuard>
     </AuthProvider>

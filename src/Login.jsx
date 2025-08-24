@@ -23,7 +23,9 @@ export default function Login() {
           setError(error.message);
         }
       } else {
-        window.location.href = '/';
+        const role =
+          data?.user?.user_metadata?.role || data?.user?.app_metadata?.role;
+        window.location.href = role === 'super_admin' ? '/superadmin' : '/';
       }
     } catch (err) {
       console.error('[Login] unexpected error', err);
