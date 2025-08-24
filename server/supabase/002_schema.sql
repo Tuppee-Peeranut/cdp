@@ -47,6 +47,14 @@ CREATE POLICY users_select ON users
 CREATE POLICY users_update ON users
   FOR UPDATE USING (deleted_at IS NULL);
 
+
+CREATE POLICY users_insert ON users
+  FOR INSERT WITH CHECK (deleted_at IS NULL);
+
+CREATE POLICY users_delete ON users
+  FOR DELETE USING (deleted_at IS NULL);
+
+
 -- Convert deletes into soft deletes
 CREATE OR REPLACE FUNCTION soft_delete_users() RETURNS trigger AS $$
 BEGIN
