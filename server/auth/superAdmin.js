@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '../supabaseClient.js';
 
-const SEED_EMAIL = 'skywalker@example.com';
-const SEED_PASSWORD = "i'my0urfather";
+const SEED_EMAIL = 'skywalker@panya.io';
+const SEED_PASSWORD = 'I@my0urfather';
 
 export async function seedSuperAdmin(client = supabaseAdmin) {
   const { data, error } = await client.auth.admin.listUsers({
