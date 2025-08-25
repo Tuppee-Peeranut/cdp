@@ -1,25 +1,31 @@
 import { supabase } from './supabaseClient.js';
 
-// Ensure the Supabase user object contains a role. If the user metadata is
-// missing the role (which can happen if the role is only stored in the public
-// `users` table), fetch it from the table and merge it into the metadata. This
-// allows client-side code to consistently rely on `user.user_metadata.role`.
+// Ensure the Supabase user object has an up‑to‑date role. Even if the auth
+// metadata contains a role (which may become stale if the role is changed
+// directly in the `users` table), fetch the latest value from the table and
+// merge it into the user metadata. This keeps client-side role checks accurate.
 export async function ensureUserRole(user) {
   if (!user) return user;
-  const role = user?.user_metadata?.role || user?.app_metadata?.role;
-  if (role) return user;
-  const { data, error } = await supabase
-    .from('users')
-    .select('role')
-    .eq('id', user.id)
-    .single();
-  if (!error && data?.role) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+    if (error || !data?.role) return user;
+    const role = data.role;
+    if (user.user_metadata?.role !== role) {
+      // Best effort to sync the auth metadata; ignore errors.
+      await supabase.auth.updateUser({ data: { role } }).catch(() => {});
+    }
     return {
       ...user,
-      user_metadata: { ...user.user_metadata, role: data.role },
+      user_metadata: { ...user.user_metadata, role },
     };
+  } catch (err) {
+    console.error('[Auth] ensureUserRole error', err);
+    return user;
   }
-  return user;
 }
 
 export async function login({ email, password }) {
@@ -27,8 +33,10 @@ export async function login({ email, password }) {
   try {
     const res = await supabase.auth.signInWithPassword({ email, password });
     console.log('[Auth] login response', res);
-    if (res.data?.user) {
-      await supabase.auth.updateUser({ data: { last_login_at: new Date().toISOString() } });
+    if (!res.error && res.data?.session) {
+      await supabase.auth
+        .updateUser({ data: { last_login_at: new Date().toISOString() } })
+        .catch(() => {});
     }
     return res;
   } catch (err) {

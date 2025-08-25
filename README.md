@@ -11,6 +11,8 @@ ChatGPT-style web app for **Customers** and **Products** with Excel/CSV upload, 
 npm install
 npm run dev
 # open the printed localhost URL
+# super admin dashboard available at /super-admin
+# super admin login available at /super-admin/login
 ```
 In the profile menu's **Feature Preview**, paste your OpenAI API Key to enable the **Ask** feature.
 
