@@ -9,7 +9,11 @@ import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
 
 function Root() {
-  const path = window.location.pathname;
+  // Normalize the path by trimming any trailing slashes so that
+  // `/superadmin` and `/superadmin/` are treated the same. Without this
+  // normalization, redirects that include a trailing slash could fail to match
+  // the intended route, leaving the user on the login screen.
+  const path = window.location.pathname.replace(/\/+$/, '');
   if (path === '/login') {
     return (
       <AuthProvider>
