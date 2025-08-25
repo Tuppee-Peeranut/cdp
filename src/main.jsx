@@ -5,6 +5,7 @@ import Login from './Login.jsx';
 import Signup from './Signup.jsx';
 import Confirm from './Confirm.jsx';
 import SuperAdmin from './SuperAdmin.jsx';
+import SuperAdminLogin from './SuperAdminLogin.jsx';
 import './index.css';
 import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
@@ -15,6 +16,13 @@ function Root() {
     return (
       <AuthProvider>
         <Login />
+      </AuthProvider>
+    );
+  }
+  if (path === '/superadmin/login' || path === '/super-admin/login') {
+    return (
+      <AuthProvider>
+        <SuperAdminLogin />
       </AuthProvider>
     );
   }
@@ -32,7 +40,7 @@ function Root() {
       </AuthProvider>
     );
   }
-  if (path === '/superadmin') {
+  if (path === '/superadmin' || path === '/super-admin') {
     return (
       <AuthProvider>
         <RoleGuard role="super_admin">
