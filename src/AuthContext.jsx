@@ -10,12 +10,11 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     console.log('[AuthContext] initializing');
-    supabase.auth.getUser().then(async ({ data: { user }, error }) => {
-      if (error) {
-        if (error.name !== 'AuthSessionMissingError') {
-          console.error('[AuthContext] getUser error', error);
-        }
-      } else {
+    supabase.auth.getUser().then(async ({ data, error }) => {
+      const user = data?.user;
+      if (error && error.name !== 'AuthSessionMissingError') {
+        console.error('[AuthContext] getUser error', error);
+      } else if (!error) {
         console.log('[AuthContext] getUser', user);
       }
       const enriched = await ensureUserRole(user);
