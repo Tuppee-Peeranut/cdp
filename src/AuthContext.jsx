@@ -12,7 +12,9 @@ export function AuthProvider({ children }) {
     console.log('[AuthContext] initializing');
     supabase.auth.getUser().then(async ({ data: { user }, error }) => {
       if (error) {
-        console.error('[AuthContext] getUser error', error);
+        if (error.name !== 'AuthSessionMissingError') {
+          console.error('[AuthContext] getUser error', error);
+        }
       } else {
         console.log('[AuthContext] getUser', user);
       }

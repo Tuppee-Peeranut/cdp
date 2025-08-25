@@ -33,8 +33,10 @@ export async function login({ email, password }) {
   try {
     const res = await supabase.auth.signInWithPassword({ email, password });
     console.log('[Auth] login response', res);
-    if (res.data?.user) {
-      await supabase.auth.updateUser({ data: { last_login_at: new Date().toISOString() } });
+    if (!res.error && res.data?.session) {
+      await supabase.auth
+        .updateUser({ data: { last_login_at: new Date().toISOString() } })
+        .catch(() => {});
     }
     return res;
   } catch (err) {
