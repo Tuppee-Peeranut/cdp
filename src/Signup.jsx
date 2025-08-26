@@ -8,11 +8,9 @@ export default function Signup() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log('[Signup] form submit', { email: form.email });
     setError('');
     try {
       const { data, error } = await signup(form);
-      console.log('[Signup] signup response', { data, error });
       if (error) {
         console.error('[Signup] signup error', error);
         setError(error.message);

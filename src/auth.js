@@ -29,10 +29,12 @@ export async function ensureUserRole(user) {
 }
 
 export async function login({ email, password }) {
-  console.log('[Auth] login attempt', { email });
+  const emailDomain = email?.split('@')[1];
+  if (emailDomain) {
+    console.log('[Auth] login attempt', { emailDomain });
+  }
   try {
     const res = await supabase.auth.signInWithPassword({ email, password });
-    console.log('[Auth] login response', res);
     if (!res.error && res.data?.session) {
       await supabase.auth
         .updateUser({ data: { last_login_at: new Date().toISOString() } })
@@ -46,7 +48,10 @@ export async function login({ email, password }) {
 }
 
 export async function signup({ email, password, tenantId, profileUrl, phone, locale, consents }) {
-  console.log('[Auth] signup attempt', { email });
+  const emailDomain = email?.split('@')[1];
+  if (emailDomain) {
+    console.log('[Auth] signup attempt', { emailDomain });
+  }
   try {
     const res = await supabase.auth.signUp({
       email,
@@ -63,7 +68,6 @@ export async function signup({ email, password, tenantId, profileUrl, phone, loc
         },
       },
     });
-    console.log('[Auth] signup response', res);
     return res;
   } catch (err) {
     console.error('[Auth] signup error', err);
