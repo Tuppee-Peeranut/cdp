@@ -4,7 +4,8 @@ const required = [
   'VITE_SUPABASE_URL',
   'VITE_SUPABASE_ANON_KEY',
   'SUPERADMIN_SEED_EMAIL',
-  'SUPERADMIN_SEED_PASSWORD'
+  'SUPERADMIN_SEED_PASSWORD',
+  'SUPERADMIN_INVITATION_CODE'
 ];
 const missing = required.filter((name) => !process.env[name]);
 
