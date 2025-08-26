@@ -23,26 +23,27 @@ export default function Confirm() {
         if (userError) throw userError;
         if (!user) throw new Error('User not found after confirmation');
 
+        const role =
+          user?.user_metadata?.role ||
+          user?.app_metadata?.role ||
+          'user';
+        const tenantId =
+          user?.user_metadata?.tenant_id ??
+          user?.app_metadata?.tenant_id ??
+          '00000000-0000-0000-0000-000000000001';
+
         const { error: upsertError } = await supabase.from('users').upsert(
           {
             id: user.id,
             username: user.email,
-            role:
-              user?.user_metadata?.role ||
-              user?.app_metadata?.role ||
-              'user',
-            tenant_id:
-
-              user?.user_metadata?.tenant_id ??
-              user?.app_metadata?.tenant_id ??
-              '00000000-0000-0000-0000-000000000001',
-
+            role,
+            tenant_id: tenantId,
           },
           { onConflict: 'id' }
         );
         if (upsertError) throw upsertError;
 
-        window.location.replace('/');
+        window.location.replace(role === 'super_admin' ? '/superadmin' : '/');
       } catch (err) {
         console.error('[Confirm] error', err);
         setError(err.message);
