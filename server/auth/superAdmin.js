@@ -1,9 +1,13 @@
 import { supabaseAdmin } from '../supabaseClient.js';
 
-const SEED_EMAIL = 'skywalker@panya.io';
-const SEED_PASSWORD = 'I@my0urfather';
-
 export async function seedSuperAdmin(client = supabaseAdmin) {
+  const SEED_EMAIL = process.env.SUPERADMIN_SEED_EMAIL;
+  const SEED_PASSWORD = process.env.SUPERADMIN_SEED_PASSWORD;
+  if (!SEED_EMAIL || !SEED_PASSWORD) {
+    throw new Error(
+      'Missing SUPERADMIN_SEED_EMAIL or SUPERADMIN_SEED_PASSWORD environment variable'
+    );
+  }
   const { data, error } = await client.auth.admin.listUsers({
     email: SEED_EMAIL,
     page: 1,

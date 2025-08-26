@@ -44,6 +44,11 @@ For Supabase authentication, set the following variables in your `.env`:
 
 See the **OIDC Configuration** section for additional variables when using an identity provider.
 
+To seed the initial super admin account, also configure:
+
+- `SUPERADMIN_SEED_EMAIL` – email for the seeded super admin user.
+- `SUPERADMIN_SEED_PASSWORD` – password for the seeded super admin user.
+
 ## Features
 - Chat-first workflow with **Import**, **Ask**, and **Task (transfer)**.
 - Excel/CSV parsing using `xlsx`.
