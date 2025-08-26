@@ -7,11 +7,9 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log('[Login] form submit', { email: form.email });
     setError('');
     try {
       const { data, error } = await login(form);
-      console.log('[Login] login response', { data, error });
       if (error) {
         console.error('[Login] login error', error);
         if (
