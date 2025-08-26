@@ -8,6 +8,14 @@ export default function SuperAdmin() {
   const [selectedTenant, setSelectedTenant] = useState(null);
   const [users, setUsers] = useState([]);
   const [newUser, setNewUser] = useState({ email: '', password: '' });
+  const [loadingTenants, setLoadingTenants] = useState(false);
+  const [tenantsError, setTenantsError] = useState('');
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState('');
+  const [addingTenant, setAddingTenant] = useState(false);
+  const [addTenantError, setAddTenantError] = useState('');
+  const [addingUser, setAddingUser] = useState(false);
+  const [addUserError, setAddUserError] = useState('');
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -17,51 +25,93 @@ export default function SuperAdmin() {
 
   useEffect(() => {
     if (!token) return;
-    fetch('/api/superadmin/tenants', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => res.json())
-      .then((data) => setTenants(data || []));
+    fetchTenants();
   }, [token]);
 
-  const addTenant = async () => {
-    const res = await fetch('/api/superadmin/tenants', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ name: tenantName }),
-    });
-    if (res.ok) {
-      const t = await res.json();
-      setTenants((ts) => [...ts, t]);
-      setTenantName('');
+  const fetchTenants = async () => {
+    setLoadingTenants(true);
+    setTenantsError('');
+    try {
+      const res = await fetch('/api/superadmin/tenants', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setTenants(data || []);
+    } catch (err) {
+      setTenantsError('Failed to load tenants. Please try again.');
+    } finally {
+      setLoadingTenants(false);
     }
   };
 
-  const selectTenant = async (tenant) => {
+  const addTenant = async () => {
+    setAddingTenant(true);
+    setAddTenantError('');
+    try {
+      const res = await fetch('/api/superadmin/tenants', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: tenantName }),
+      });
+      if (!res.ok) throw new Error();
+      const t = await res.json();
+      setTenants((ts) => [...ts, t]);
+      setTenantName('');
+    } catch (err) {
+      setAddTenantError('Failed to add tenant. Please try again.');
+    } finally {
+      setAddingTenant(false);
+    }
+  };
+
+  const selectTenant = (tenant) => {
     setSelectedTenant(tenant);
-    const res = await fetch(`/api/superadmin/tenants/${tenant.id}/users`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    setUsers(data || []);
+    fetchUsers(tenant);
+  };
+
+  const fetchUsers = async (tenant) => {
+    setLoadingUsers(true);
+    setUsersError('');
+    try {
+      const res = await fetch(`/api/superadmin/tenants/${tenant.id}/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      setUsers(data || []);
+    } catch (err) {
+      setUsersError('Failed to load users. Please try again.');
+      setUsers([]);
+    } finally {
+      setLoadingUsers(false);
+    }
   };
 
   const addUser = async () => {
-    const res = await fetch('/api/superadmin/users', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ ...newUser, tenantId: selectedTenant.id }),
-    });
-    if (res.ok) {
+    if (!selectedTenant) return;
+    setAddingUser(true);
+    setAddUserError('');
+    try {
+      const res = await fetch('/api/superadmin/users', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ ...newUser, tenantId: selectedTenant.id }),
+      });
+      if (!res.ok) throw new Error();
       const data = await res.json();
       setUsers((us) => [...us, data?.user || data]);
       setNewUser({ email: '', password: '' });
+    } catch (err) {
+      setAddUserError('Failed to add user. Please try again.');
+    } finally {
+      setAddingUser(false);
     }
   };
 
@@ -69,18 +119,29 @@ export default function SuperAdmin() {
     <div className="p-4 flex gap-8">
       <div className="w-1/3">
         <h1 className="text-2xl font-medium mb-4">Tenants</h1>
-        <ul className="mb-4 space-y-1">
-          {tenants.map((t) => (
-            <li key={t.id}>
-              <button
-                onClick={() => selectTenant(t)}
-                className="underline"
-              >
-                {t.name}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {loadingTenants ? (
+          <p>Loading tenants...</p>
+        ) : tenantsError ? (
+          <div className="mb-4 space-y-1">
+            <p>{tenantsError}</p>
+            <button onClick={fetchTenants} className="underline">
+              Retry
+            </button>
+          </div>
+        ) : (
+          <ul className="mb-4 space-y-1">
+            {tenants.map((t) => (
+              <li key={t.id}>
+                <button
+                  onClick={() => selectTenant(t)}
+                  className="underline"
+                >
+                  {t.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="space-y-2">
           <input
             type="text"
@@ -89,11 +150,15 @@ export default function SuperAdmin() {
             onChange={(e) => setTenantName(e.target.value)}
             className="w-full border rounded px-2 py-1"
           />
+          {addTenantError && (
+            <p className="text-red-600">{addTenantError}</p>
+          )}
           <button
             onClick={addTenant}
-            className="w-full bg-neutral-900 text-white rounded py-1"
+            disabled={addingTenant}
+            className="w-full bg-neutral-900 text-white rounded py-1 disabled:opacity-50"
           >
-            Add Tenant
+            {addingTenant ? 'Adding...' : 'Add Tenant'}
           </button>
         </div>
       </div>
@@ -103,11 +168,25 @@ export default function SuperAdmin() {
             <h2 className="text-xl font-medium mb-4">
               Users for {selectedTenant.name}
             </h2>
-            <ul className="mb-4 space-y-1">
-              {users.map((u) => (
-                <li key={u.id}>{u.username || u.email}</li>
-              ))}
-            </ul>
+            {loadingUsers ? (
+              <p>Loading users...</p>
+            ) : usersError ? (
+              <div className="mb-4 space-y-1">
+                <p>{usersError}</p>
+                <button
+                  onClick={() => fetchUsers(selectedTenant)}
+                  className="underline"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <ul className="mb-4 space-y-1">
+                {users.map((u) => (
+                  <li key={u.id}>{u.username || u.email}</li>
+                ))}
+              </ul>
+            )}
             <div className="space-y-2">
               <input
                 type="email"
@@ -125,11 +204,15 @@ export default function SuperAdmin() {
                 }
                 className="w-full border rounded px-2 py-1"
               />
+              {addUserError && (
+                <p className="text-red-600">{addUserError}</p>
+              )}
               <button
                 onClick={addUser}
-                className="w-full bg-neutral-900 text-white rounded py-1"
+                disabled={addingUser}
+                className="w-full bg-neutral-900 text-white rounded py-1 disabled:opacity-50"
               >
-                Add User
+                {addingUser ? 'Adding...' : 'Add User'}
               </button>
             </div>
           </div>
