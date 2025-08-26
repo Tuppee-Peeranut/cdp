@@ -1,13 +1,23 @@
 import React, { useState } from 'react';
 import { login, ensureUserRole, logout } from './auth.js';
+import { Loader2 } from 'lucide-react';
 
 export default function Login() {
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSubmit(e);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError('');
+    setLoading(true);
     try {
       const { data, error } = await login(form);
       if (error) {
@@ -35,6 +45,8 @@ export default function Login() {
     } catch (err) {
       console.error('[Login] unexpected error', err);
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -45,7 +57,7 @@ export default function Login() {
         <a href="/signup" className="underline">Sign up</a>
       </nav>
       <div className="flex-grow flex items-center justify-center p-4">
-        <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
+        <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className="w-full max-w-sm space-y-4">
           <h1 className="text-2xl font-medium text-center">Sign in</h1>
           {error && <div className="text-sm text-red-500 text-center">{error}</div>}
           <input
@@ -64,8 +76,19 @@ export default function Login() {
             placeholder="Password"
             className="w-full border rounded px-3 py-2"
           />
-          <button type="submit" className="w-full bg-neutral-900 text-white rounded py-2">
-            Sign in
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-neutral-900 text-white rounded py-2 flex items-center justify-center"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="sr-only">Signing in...</span>
+              </>
+            ) : (
+              'Sign in'
+            )}
           </button>
           <p className="text-sm text-center text-neutral-600">
             Don't have an account?{' '}
