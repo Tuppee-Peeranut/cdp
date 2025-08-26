@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { login, ensureUserRole, logout, signupSuperAdmin } from './auth.js';
+import { Loader2 } from 'lucide-react';
 
 const INVITE_CODE = import.meta.env.SUPERADMIN_INVITATION_CODE;
 
@@ -8,10 +9,19 @@ export default function SuperAdminLogin() {
   const [error, setError] = useState('');
   const [isSignup, setIsSignup] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSubmit(e);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError('');
+    setLoading(true);
     try {
       const { data, error } = await login(form);
       if (error) {
@@ -23,6 +33,7 @@ export default function SuperAdminLogin() {
         if (role !== 'super_admin') {
           await logout();
           setError('Access restricted to super admins.');
+          setLoading(false);
           return;
         }
         window.location.href = '/superadmin';
@@ -30,6 +41,8 @@ export default function SuperAdminLogin() {
     } catch (err) {
       console.error('[SuperAdminLogin] unexpected error', err);
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -125,7 +138,7 @@ export default function SuperAdminLogin() {
             </form>
           )
         ) : (
-          <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
+          <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className="w-full max-w-sm space-y-4">
             <h1 className="text-2xl font-medium text-center">Super Admin Sign in</h1>
             {error && <div className="text-sm text-red-500 text-center">{error}</div>}
             <input
@@ -144,8 +157,19 @@ export default function SuperAdminLogin() {
               placeholder="Password"
               className="w-full border rounded px-3 py-2"
             />
-            <button type="submit" className="w-full bg-neutral-900 text-white rounded py-2">
-              Sign in
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-neutral-900 text-white rounded py-2 flex items-center justify-center"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="sr-only">Signing in...</span>
+                </>
+              ) : (
+                'Sign in'
+              )}
             </button>
             <p className="text-sm text-center text-neutral-600">
               Need an account?{' '}
