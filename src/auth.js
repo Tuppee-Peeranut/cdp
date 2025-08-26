@@ -75,6 +75,28 @@ export async function signup({ email, password, tenantId, profileUrl, phone, loc
   }
 }
 
+export async function signupSuperAdmin({ email, password, phone, locale }) {
+  const emailDomain = email?.split('@')[1];
+  if (emailDomain) {
+    console.log('[Auth] super admin signup attempt', { emailDomain });
+  }
+  try {
+    const res = await supabase.auth.signUp({
+      email,
+      password,
+      phone,
+      options: {
+        emailRedirectTo: `${window.location.origin}/confirm`,
+        data: { role: 'super_admin', locale },
+      },
+    });
+    return res;
+  } catch (err) {
+    console.error('[Auth] super admin signup error', err);
+    throw err;
+  }
+}
+
 export function loginWithSSO(provider) {
   console.log('[Auth] login with SSO', { provider });
   return supabase.auth

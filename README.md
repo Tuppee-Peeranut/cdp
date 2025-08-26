@@ -48,6 +48,7 @@ To seed the initial super admin account, also configure:
 
 - `SUPERADMIN_SEED_EMAIL` – email for the seeded super admin user.
 - `SUPERADMIN_SEED_PASSWORD` – password for the seeded super admin user.
+- `SUPERADMIN_INVITATION_CODE` – invitation code required to sign up for a super admin account.
 
 ## Features
 - Chat-first workflow with **Import**, **Ask**, and **Task (transfer)**.
