@@ -11,6 +11,14 @@ export default function SuperAdminLogin() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSubmit(e);
+    }
+  };
+
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (loading) return;
@@ -21,6 +29,7 @@ export default function SuperAdminLogin() {
       if (error) {
         console.error('[SuperAdminLogin] login error', error);
         setError(error.message);
+
         setLoading(false);
         return;
       }
@@ -31,11 +40,15 @@ export default function SuperAdminLogin() {
         setError('Access restricted to super admins.');
         setLoading(false);
         return;
+
       }
       window.location.replace('/superadmin');
     } catch (err) {
       console.error('[SuperAdminLogin] unexpected error', err);
       setError(err.message);
+
+    } finally {
+
       setLoading(false);
     }
   };
@@ -132,7 +145,7 @@ export default function SuperAdminLogin() {
             </form>
           )
         ) : (
-          <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
+          <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} className="w-full max-w-sm space-y-4">
             <h1 className="text-2xl font-medium text-center">Super Admin Sign in</h1>
             {error && <div className="text-sm text-red-500 text-center">{error}</div>}
             <input
