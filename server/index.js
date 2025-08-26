@@ -8,7 +8,7 @@ import superAdminRoutes from './auth/superAdminRoutes.js';
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-app.post('/api/chat', authorize(['admin']), openaiProxy);
+app.post('/api/chat', authorize(['admin', 'user']), openaiProxy);
 app.use('/api/superadmin', superAdminRoutes);
 
 const port = process.env.PORT || 3001;
