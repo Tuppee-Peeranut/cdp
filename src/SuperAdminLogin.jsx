@@ -11,11 +11,13 @@ export default function SuperAdminLogin() {
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
       handleSubmit(e);
     }
   };
+
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -27,21 +29,26 @@ export default function SuperAdminLogin() {
       if (error) {
         console.error('[SuperAdminLogin] login error', error);
         setError(error.message);
-      } else {
-        const user = await ensureUserRole(data?.user);
-        const role = user?.user_metadata?.role || user?.app_metadata?.role;
-        if (role !== 'super_admin') {
-          await logout();
-          setError('Access restricted to super admins.');
-          setLoading(false);
-          return;
-        }
-        window.location.href = '/superadmin';
+
+        setLoading(false);
+        return;
       }
+      const user = await ensureUserRole(data?.user);
+      const role = user?.user_metadata?.role || user?.app_metadata?.role;
+      if (role !== 'super_admin') {
+        await logout();
+        setError('Access restricted to super admins.');
+        setLoading(false);
+        return;
+
+      }
+      window.location.replace('/superadmin');
     } catch (err) {
       console.error('[SuperAdminLogin] unexpected error', err);
       setError(err.message);
+
     } finally {
+
       setLoading(false);
     }
   };
