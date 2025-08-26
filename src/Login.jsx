@@ -29,7 +29,13 @@ export default function Login() {
           setError('Please use the super admin login page.');
           return;
         }
-        window.location.href = '/';
+        // Redirect users based on their role so that admins land on the
+        // main application and regular users go to their dashboard.
+        if (role === 'admin') {
+          window.location.href = '/';
+        } else {
+          window.location.href = '/user';
+        }
       }
     } catch (err) {
       console.error('[Login] unexpected error', err);
