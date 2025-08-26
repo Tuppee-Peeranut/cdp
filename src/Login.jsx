@@ -29,13 +29,8 @@ export default function Login() {
           setError('Please use the super admin login page.');
           return;
         }
-        // Redirect users based on their role so that admins land on the
-        // main application and regular users go to their dashboard.
-        if (role === 'admin') {
-          window.location.href = '/';
-        } else {
-          window.location.href = '/user';
-        }
+        // All authenticated users land on the main application regardless of role.
+        window.location.href = '/';
       }
     } catch (err) {
       console.error('[Login] unexpected error', err);

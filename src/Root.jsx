@@ -7,7 +7,6 @@ import SuperAdmin from './SuperAdmin.jsx';
 import SuperAdminLogin from './SuperAdminLogin.jsx';
 import RoleGuard from './RoleGuard.jsx';
 import { AuthProvider } from './AuthContext.jsx';
-import User from './User.jsx';
 
 function Root() {
   // Normalize the path by trimming any trailing slashes so that
@@ -43,15 +42,6 @@ function Root() {
       </AuthProvider>
     );
   }
-  if (path === '/user') {
-    return (
-      <AuthProvider>
-        <RoleGuard role="user">
-          <User />
-        </RoleGuard>
-      </AuthProvider>
-    );
-  }
   if (path === '/superadmin' || path === '/super-admin') {
     return (
       <AuthProvider>
@@ -63,7 +53,7 @@ function Root() {
   }
   return (
     <AuthProvider>
-      <RoleGuard role="admin">
+      <RoleGuard role={["admin", "user"]}>
         <App />
       </RoleGuard>
     </AuthProvider>
