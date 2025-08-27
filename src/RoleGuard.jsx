@@ -1,17 +1,24 @@
 import React from 'react';
 import { useAuth } from './AuthContext.jsx';
+import { logout } from './auth.js';
 
 export default function RoleGuard({ role, children }) {
   const { user } = useAuth();
 
   if (user === undefined) {
     console.log('[RoleGuard] user loading');
-    return null;
+    return (
+      <div className="p-4 text-neutral-500">
+        Loading...
+      </div>
+    );
   }
 
   if (!user) {
     console.warn('[RoleGuard] no user, redirecting');
-    window.location.href = '/login';
+    logout().finally(() => {
+      window.location.href = '/login';
+    });
     return null;
   }
 
