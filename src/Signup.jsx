@@ -14,6 +14,8 @@ export default function Signup() {
       if (error) {
         console.error('[Signup] signup error', error);
         setError(error.message);
+      } else if (data?.session) {
+        window.location.href = '/';
       } else {
         setSuccess(true);
       }
