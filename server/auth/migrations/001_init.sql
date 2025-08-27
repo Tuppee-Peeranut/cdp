@@ -1,26 +1,15 @@
+-- Reset basic auth tables
+DROP TABLE IF EXISTS super_admins;
+DROP TABLE IF EXISTS users;
+
 CREATE TABLE IF NOT EXISTS users (
-  id SERIAL PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  password TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'user'
+  id UUID PRIMARY KEY,
+  email TEXT UNIQUE,
+  role TEXT NOT NULL CHECK (role IN ('user', 'admin')) DEFAULT 'user'
 );
 
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-  token TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  expires_at BIGINT NOT NULL,
-  revoked BOOLEAN DEFAULT FALSE
+CREATE TABLE IF NOT EXISTS super_admins (
+  id UUID PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS oidc_users (
-  id SERIAL PRIMARY KEY,
-  provider TEXT NOT NULL,
-  sub TEXT UNIQUE NOT NULL,
-  name TEXT,
-  email TEXT
-);
-
-CREATE TABLE IF NOT EXISTS mfa (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id),
-  secret TEXT NOT NULL
-);

@@ -47,7 +47,7 @@ export async function login({ email, password }) {
   }
 }
 
-export async function signup({ email, password, tenantId, profileUrl, phone, locale, consents }) {
+export async function signup({ email, password, profileUrl, phone, locale, consents }) {
   const emailDomain = email?.split('@')[1];
   if (emailDomain) {
     console.log('[Auth] signup attempt', { emailDomain });
@@ -60,11 +60,10 @@ export async function signup({ email, password, tenantId, profileUrl, phone, loc
       options: {
         emailRedirectTo: `${window.location.origin}/confirm`,
         data: {
-          role: 'admin',
-          tenant_id: tenantId ?? '00000000-0000-0000-0000-000000000001',
+          role: 'user',
           profile_url: profileUrl,
           locale,
-          consents
+          consents,
         },
       },
     });
