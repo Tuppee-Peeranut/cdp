@@ -1,11 +1,30 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { login, ensureUserRole, logout } from './auth.js';
 import { Loader2 } from 'lucide-react';
+import { useAuth } from './AuthContext.jsx';
 
 export default function Login() {
+  const { user } = useAuth();
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // If a user session already exists, redirect immediately to the main app.
+  useEffect(() => {
+    if (user) {
+      window.location.href = '/';
+    }
+  }, [user]);
+
+  if (user === undefined) {
+    return (
+      <div className="p-4 text-neutral-500">
+        Loading...
+      </div>
+    );
+  }
+
+  if (user) return null;
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
