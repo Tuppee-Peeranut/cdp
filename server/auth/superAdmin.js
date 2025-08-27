@@ -11,18 +11,24 @@ export async function seedSuperAdmin(client = supabaseAdmin) {
   const { data, error } = await client.auth.admin.listUsers({
     email: SEED_EMAIL,
     page: 1,
-    perPage: 1
+    perPage: 1,
   });
   if (error) throw error;
-  if (!data?.users?.length) {
-    const { error: createError } = await client.auth.admin.createUser({
+  let user = data?.users?.[0];
+  if (!user) {
+    const { data: created, error: createError } = await client.auth.admin.createUser({
       email: SEED_EMAIL,
       password: SEED_PASSWORD,
       email_confirm: true,
-      user_metadata: { role: 'super_admin', username: 'skywalker' }
+      user_metadata: { role: 'super_admin', username: 'skywalker' },
     });
     if (createError) throw createError;
+    user = created.user;
   }
+  const { error: tableError } = await client
+    .from('super_admins')
+    .upsert({ id: user.id, email: user.email });
+  if (tableError) throw tableError;
 }
 
 export async function createUser(
