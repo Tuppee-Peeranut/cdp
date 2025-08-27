@@ -16,9 +16,11 @@ export default function RoleGuard({ role, children }) {
 
   if (!user) {
     console.warn('[RoleGuard] no user, redirecting');
-    logout().finally(() => {
-      window.location.href = '/login';
-    });
+    // Fire-and-forget logout so we don't block redirect on network latency.
+    // Waiting for the promise could leave the UI stuck in a loading state
+    // if the sign-out request is slow or fails. Redirect immediately.
+    logout();
+    window.location.href = '/login';
     return null;
   }
 
