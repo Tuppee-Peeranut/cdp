@@ -9,18 +9,20 @@ export async function ensureUserRole(user) {
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('role')
+      .select('role, tenant_id')
       .eq('id', user.id)
       .single();
     if (error || !data?.role) return user;
     const role = data.role;
-    if (user.user_metadata?.role !== role) {
+    const tenant_id = data.tenant_id;
+    const needsUpdate = user.user_metadata?.role !== role || user.user_metadata?.tenant_id !== tenant_id;
+    if (needsUpdate) {
       // Best effort to sync the auth metadata; ignore errors.
-      await supabase.auth.updateUser({ data: { role } }).catch(() => {});
+      await supabase.auth.updateUser({ data: { role, tenant_id } }).catch(() => {});
     }
     return {
       ...user,
-      user_metadata: { ...user.user_metadata, role },
+      user_metadata: { ...user.user_metadata, role, tenant_id },
     };
   } catch (err) {
     console.error('[Auth] ensureUserRole error', err);

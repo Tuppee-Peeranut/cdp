@@ -38,6 +38,7 @@ export default function Confirm() {
             username: user.email,
             role,
             tenant_id: tenantId,
+            status: 'active',
           },
           { onConflict: 'id' }
         );

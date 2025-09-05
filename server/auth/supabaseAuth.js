@@ -17,7 +17,8 @@ export function authorize(required = []) {
         payload?.user_metadata?.role || payload?.app_metadata?.role || payload.role || 'user';
       const tenantId =
         payload?.user_metadata?.tenant_id || payload?.app_metadata?.tenant_id || null;
-      req.user = { id: payload.sub, role, tenantId };
+      const email = payload?.email || payload?.user_metadata?.email || null;
+      req.user = { id: payload.sub, role, tenantId, email };
         if (role !== 'super_admin' && requiredRoles.length && !requiredRoles.includes(role)) {
           return res.status(403).json({ error: 'Forbidden' });
         }
