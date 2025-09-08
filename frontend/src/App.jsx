@@ -172,21 +172,30 @@ const MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
 
 /**
  * Parse first worksheet into rows
+ * - Returns normalized rows (for validation) and raw rows/columns (for profiling)
  * @param {File} file
- * @returns {Promise<BatchRow[]>}
+ * @returns {Promise<{ rows: BatchRow[], rawRows: any[], rawColumns: string[] }>}
  */
 async function parseWorkbook(file) {
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: "array" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-  /** @type {BatchRow[]} */
-  return json.map((r) => {
-    const norm = {};
+
+  // Clean raw rows (trim headers and string values), keep original shape
+  const rawRows = json.map((r) => {
+    const cleaned = {};
     for (const k of Object.keys(r)) {
       const key = String(k).trim();
-      norm[key] = typeof r[k] === "string" ? r[k].trim() : r[k];
+      const v = r[k];
+      cleaned[key] = typeof v === "string" ? v.trim() : v;
     }
+    return cleaned;
+  });
+  const rawColumns = Object.keys(rawRows[0] || {});
+
+  /** @type {BatchRow[]} */
+  const rows = rawRows.map((norm) => {
     const Amount = Number(norm["Amount"]) || 0;
     return {
       RecipientName: String(norm["RecipientName"] || ""),
@@ -197,6 +206,8 @@ async function parseWorkbook(file) {
       Note: String(norm["Note"] || ""),
     };
   });
+
+  return { rows, rawRows, rawColumns };
 }
 
 /**
@@ -1515,7 +1526,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
 
   const handleUpload = async (file) => {
     if (!file) return;
-    const rows = await parseWorkbook(file);
+    const { rows, rawRows, rawColumns } = await parseWorkbook(file);
     const { combined, perRule, totalAmount, rowCount } = validateWithRules(rows, rulesets, domain);
 
     const batch = {
@@ -1544,13 +1555,16 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     ]);
     // Add quick profile summary
     try {
-      const cols = Object.keys(rows[0] || {});
+      const cols = (rawColumns && rawColumns.length) ? rawColumns : Object.keys(rows[0] || {});
       const colCount = cols.length;
       let missing = 0;
       const missingByCol = cols.map((c) => 0);
       const uniqMap = new Map();
-      for (const r of rows.slice(0, 10000)) { // cap to prevent heavy calc
-        const key = JSON.stringify(r);
+      for (const r of (rawRows && rawRows.length ? rawRows : rows).slice(0, 10000)) { // cap to prevent heavy calc
+        const key = cols.map((c) => {
+          const v = r[c];
+          return v === null || v === undefined ? '' : String(v);
+        }).join('\u0001');
         uniqMap.set(key, (uniqMap.get(key) || 0) + 1);
         for (let i = 0; i < cols.length; i++) {
           const v = r[cols[i]];
@@ -1558,10 +1572,10 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
         }
       }
       const dups = Array.from(uniqMap.values()).filter((n) => n > 1).reduce((a, n) => a + (n - 1), 0);
-      const totalCells = rowCount * Math.max(1, colCount);
+      const totalCells = Math.min(rowCount, 10000) * Math.max(1, colCount);
       const missPct = totalCells ? Math.round((missing / totalCells) * 100) : 0;
       const topMissing = cols
-        .map((c, i) => ({ c, p: rowCount ? Math.round((missingByCol[i] / rowCount) * 100) : 0 }))
+        .map((c, i) => ({ c, p: Math.min(rowCount, 10000) ? Math.round((missingByCol[i] / Math.min(rowCount, 10000)) * 100) : 0 }))
         .sort((a, b) => b.p - a.p)
         .slice(0, 3)
         .filter((x) => x.p > 0)
@@ -1569,7 +1583,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
         .join(' · ');
       const summary = `Profile: ${rowCount} rows · ${colCount} columns · missing ${missing} cells (${missPct}%)` +
         (dups ? ` · ~${dups} duplicate rows` : '') + (topMissing ? ` · top missing: ${topMissing}` : '');
-      setMessages((m) => [...m, { role: 'assistant', type: 'summary', content: summary }]);
+      setMessages((m) => [...m, { role: 'assistant', type: 'summary', content: (summary.split(' A� ').join(' · ') + (rowCount > Math.min(rowCount, 10000) ? ` (first ${Math.min(rowCount, 10000)} rows)` : '')) }]);
     } catch {}
     addToast("File uploaded");
 
