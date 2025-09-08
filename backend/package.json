@@ -1,0 +1,22 @@
+{
+  "name": "cdp-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js",
+    "start": "node server/index.js",
+    "prestart": "node checkEnv.js",
+    "test": "node --test server/auth/*.test.js",
+    "seed:superadmin": "node server/auth/seedSuperAdmin.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.42.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "xlsx": "^0.18.5"
+  }
+}
+
