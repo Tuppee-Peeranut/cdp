@@ -116,6 +116,10 @@ import * as XLSX from "xlsx";
  * @property {string|null} endpoint
  * @property {number=} rowCount
  * @property {number=} totalAmount
+ * @property {string=} domainId
+ * @property {boolean=} processed // after rules applied
+ * @property {string=} outputVersionId // domain_versions.id produced by clean
+ * @property {number=} changedRows // number of rows changed by clean
  */
 
 /**
@@ -821,6 +825,11 @@ export default function App() {
   const menuRef = useRef(null);
   const avatarInputRef = useRef(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+
+  // Persist tasks to localStorage so clearing/removing sticks
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks)); } catch {}
+  }, [tasks]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -1947,6 +1956,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       totalAmount: currentBatch.totalAmount,
       status: "initiated",
       endpoint: null,
+      domainId: domainId || null,
+      processed: false,
     };
     setTasks((t) => [task, ...t]);
     setMessages((m) => [
@@ -2064,6 +2075,23 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     }, 3000);
     setTimeout(() => {
       setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "completed" } : t)));
+      // After task completes, execute enabled rules (clean) and mark processed
+      (async () => {
+        try {
+          if (!domainId) return;
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          if (!token) return;
+          const res = await fetch(`/api/domains/${domainId}/clean`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+          if (!res.ok) throw new Error((await res.json()).error || 'Clean failed');
+          const j = await res.json();
+          const outVer = j?.version?.id || null;
+          const changed = j?.changed || 0;
+          setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, processed: true, outputVersionId: outVer, changedRows: changed } : t)));
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Rules executed. ${changed} row(s) updated. Output version ${outVer || '(n/a)'}.` }]);
+        } catch (e) {
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Rule execution error: ${e.message || e}` }]);
+        }
+      })();
     }, 6000);
   };
 
@@ -2199,9 +2227,24 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       {/* Side panel: Task Monitoring */}
       {showTasks && (
         <div className="border-l border-neutral-200 h-[calc(100vh-3rem)] overflow-auto">
-          <div className="px-4 py-3 border-b border-neutral-200 flex items-center gap-2">
-            <Package size={18} className="text-neutral-600" />
-            <div className="font-medium">Data Provider Monitoring</div>
+          <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Package size={18} className="text-neutral-600" />
+              <div className="font-medium">Data Provider Monitoring</div>
+            </div>
+            {tasksOfKind.length > 0 && (
+              <button
+                className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs"
+                onClick={() => {
+                  if (confirm('Clear all tasks for this transfer type?')) {
+                    setTasks((ts) => ts.filter((t) => t.kind !== kind));
+                  }
+                }}
+                title="Clear all"
+              >
+                Clear
+              </button>
+            )}
           </div>
           {tasksOfKind.length === 0 ? (
             <div className="p-4 text-sm text-neutral-500">No tasks yet. Upload a file to start.</div>
@@ -2226,6 +2269,52 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
                   </div>
                   {t.endpoint && (
                     <div className="text-xs text-neutral-500 mt-1 truncate">API: {t.endpoint}</div>
+                  )}
+                  {t.processed && (
+                    <div className="text-xs text-emerald-600 mt-1">
+                      Processed • Changed {t.changedRows ?? 0} • Version {t.outputVersionId ? t.outputVersionId.slice(0,8) : 'n/a'}
+                    </div>
+                  )}
+                  {(domainId || true) && (
+                    <div className="mt-2 flex items-center justify-between">
+                      <div>
+                        {domainId && (
+                          <button
+                            className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs flex items-center gap-1"
+                            onClick={async () => {
+                              try {
+                                const token = (await supabase.auth.getSession()).data?.session?.access_token;
+                            const res = await fetch(`/api/domains/${domainId}/export.csv?limit=10000`, { headers: { Authorization: `Bearer ${token}` } });
+                                if (!res.ok) throw new Error((await res.json()).error || 'Export failed');
+                                const blob = await res.blob();
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                const base = (t.fileName || 'data').replace(/\.[^/.]+$/, '');
+                                a.href = url;
+                                a.download = `${base}_clean.csv`;
+                                document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+                                URL.revokeObjectURL(url);
+                              } catch (e) {
+                                alert(e.message || 'Export failed');
+                              }
+                            }}
+                            title="Download CSV after rules applied"
+                          >
+                            <Download size={14} />
+                            Download CSV
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs flex items-center gap-1"
+                        onClick={() => setTasks((ts) => ts.filter((x) => x.id !== t.id))}
+                        title="Remove task from list"
+                      >
+                        <Trash2 size={14} /> Remove
+                      </button>
+                    </div>
                   )}
                   {t.status !== "completed" && (
                     <div className="mt-2 flex justify-end">
