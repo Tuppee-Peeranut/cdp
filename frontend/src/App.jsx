@@ -1784,6 +1784,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   const [serverRuleCount, setServerRuleCount] = useState(null);
   const [showRules, setShowRules] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [serverTasks, setServerTasks] = useState([]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -1795,6 +1796,38 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   }, [messages, storageKey]);
 
   const tasksOfKind = useMemo(() => tasks.filter((t) => t.kind === kind), [tasks, kind]);
+  const fetchServerTasks = React.useCallback(async () => {
+    try {
+      if (!domainId) { setServerTasks([]); return; }
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!token) { setServerTasks([]); return; }
+      const url = `/api/tasks?domain_id=${encodeURIComponent(domainId)}&kind=${encodeURIComponent(kind)}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const list = res.ok ? await res.json() : [];
+      setServerTasks(Array.isArray(list) ? list : []);
+    } catch { setServerTasks([]); }
+  }, [domainId, kind]);
+
+  // Load server tasks on domain change
+  useEffect(() => { fetchServerTasks(); }, [fetchServerTasks]);
+
+  const items = useMemo(() => {
+    if (domainId) {
+      return (serverTasks || []).map((t) => ({
+        id: t.id,
+        isServer: true,
+        params: t.params || {},
+        kind: t.kind,
+        fileName: t.params?.fileName || 'Task',
+        createdAt: t.created_at,
+        rowCount: t.params?.rowCount || 0,
+        totalAmount: t.params?.totalAmount || 0,
+        status: t.status,
+        endpoint: t.params?.endpoint || null,
+      }));
+    }
+    return tasksOfKind;
+  }, [domainId, serverTasks, tasksOfKind]);
 
   const headerName = domainId ? domain : (kind === "credit" ? "Customers" : "Products");
   const HeaderIcon = domainId ? Package : (kind === "credit" ? Users : Package);
@@ -1938,17 +1971,39 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       ]);
       return;
     }
-    const task = {
-      id: uid("task"),
-      kind,
-      fileName: currentBatch.fileName,
-      createdAt: new Date().toISOString(),
-      rowCount: currentBatch.rowCount,
-      totalAmount: currentBatch.totalAmount,
-      status: "initiated",
-      endpoint: null,
-    };
-    setTasks((t) => [task, ...t]);
+    if (domainId) {
+      try {
+        const token = (await supabase.auth.getSession()).data?.session?.access_token;
+        const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+        const body = {
+          domain_id: domainId,
+          kind,
+          status: 'initiated',
+          params: {
+            fileName: currentBatch.fileName,
+            rowCount: currentBatch.rowCount,
+            totalAmount: currentBatch.totalAmount,
+          },
+        };
+        const res = await fetch('/api/tasks', { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error((await res.json()).error || 'Create task failed');
+        await fetchServerTasks();
+      } catch (e) {
+        console.error('create server task failed', e);
+      }
+    } else {
+      const task = {
+        id: uid("task"),
+        kind,
+        fileName: currentBatch.fileName,
+        createdAt: new Date().toISOString(),
+        rowCount: currentBatch.rowCount,
+        totalAmount: currentBatch.totalAmount,
+        status: "initiated",
+        endpoint: null,
+      };
+      setTasks((t) => [task, ...t]);
+    }
     setMessages((m) => [
       ...m,
       { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} records.` },
@@ -2056,15 +2111,40 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   const assignEndpoint = () => {
     if (!selectedTask || !selectedEndpoint) return;
     const id = selectedTask.id;
-    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, endpoint: selectedEndpoint, status: "connecting" } : t)));
-    setSelectedTask(null);
-    setSelectedEndpoint("");
-    setTimeout(() => {
-      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "transferring" } : t)));
-    }, 3000);
-    setTimeout(() => {
-      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "completed" } : t)));
-    }, 6000);
+    const doLocal = !domainId || !selectedTask?.isServer;
+    if (doLocal) {
+      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, endpoint: selectedEndpoint, status: "connecting" } : t)));
+      setSelectedTask(null);
+      setSelectedEndpoint("");
+      setTimeout(() => {
+        setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "transferring" } : t)));
+      }, 3000);
+      setTimeout(() => {
+        setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "completed" } : t)));
+      }, 6000);
+    } else {
+      (async () => {
+        try {
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+          // connecting
+          await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'connecting', params: { ...(selectedTask.params || {}), endpoint: selectedEndpoint } }) });
+          await fetchServerTasks();
+          setSelectedTask(null);
+          setSelectedEndpoint("");
+          setTimeout(async () => {
+            await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'transferring' }) });
+            await fetchServerTasks();
+          }, 3000);
+          setTimeout(async () => {
+            await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'completed' }) });
+            await fetchServerTasks();
+          }, 6000);
+        } catch (e) {
+          console.error('update server task failed', e);
+        }
+      })();
+    }
   };
 
   return (
@@ -2203,11 +2283,11 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             <Package size={18} className="text-neutral-600" />
             <div className="font-medium">Data Provider Monitoring</div>
           </div>
-          {tasksOfKind.length === 0 ? (
+          {items.length === 0 ? (
             <div className="p-4 text-sm text-neutral-500">No tasks yet. Upload a file to start.</div>
           ) : (
             <ul className="p-2 space-y-2">
-              {tasksOfKind.map((t) => (
+              {items.map((t) => (
                 <li key={t.id} className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
                   <div className="flex items-center justify-between gap-2">
                     <div

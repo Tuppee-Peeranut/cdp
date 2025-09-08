@@ -460,12 +460,27 @@ router.post('/:id/ingest', async (req, res) => {
 
     // Upsert current data and write history on changes
     // Also write a snapshot of the newly ingested record for this version (once per key)
+    // Additionally, ensure we never "lose" rows due to duplicate business keys:
+    // if a computed key collides within the same ingest or with existing current data,
+    // we disambiguate by appending a per-row index to the business key for this ingest.
     const snapshotWritten = new Set();
+    const seenIngest = new Set();
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      const keyValues = Object.fromEntries(bk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
-      const keyHash = sha256(bk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
       const record = r;
+
+      // Start with configured business key; may extend with __row_index to prevent collisions
+      const baseBk = bk;
+      let effBk = [...baseBk];
+      let keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
+      let keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
+
+      // If a previous row in this ingest used the same key, disambiguate immediately
+      if (seenIngest.has(keyHash)) {
+        effBk = baseBk.includes('__row_index') ? baseBk : [...baseBk, '__row_index'];
+        keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
+        keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
+      }
 
       // Fetch existing
       const { data: existing, error: exErr } = await supabaseAdmin
@@ -477,16 +492,19 @@ router.post('/:id/ingest', async (req, res) => {
       if (exErr) return res.status(400).json({ error: exErr.message });
 
       if (existing?.record) {
-        // If changed, update current (history snapshot of new is handled below)
-        const changed = JSON.stringify(existing.record) !== JSON.stringify(record);
-        if (changed) {
-          const { error: updErr } = await supabaseAdmin
-            .from('domain_data')
-            .update({ record, key_values: keyValues, updated_at: new Date().toISOString() })
-            .eq('domain_id', id)
-            .eq('key_hash', keyHash);
-          if (updErr) return res.status(400).json({ error: updErr.message });
-        }
+        // Collision with existing current data: never overwrite — keep every row
+        // Disambiguate key by including per-row index for this ingest
+        effBk = effBk.includes('__row_index') ? effBk : [...baseBk, '__row_index'];
+        keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
+        keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
+        // Insert as a new current record
+        const { error: insErr } = await supabaseAdmin.from('domain_data').insert({
+          domain_id: id,
+          key_hash: keyHash,
+          key_values: keyValues,
+          record,
+        });
+        if (insErr) return res.status(400).json({ error: insErr.message });
       } else {
         const { error: insErr } = await supabaseAdmin.from('domain_data').insert({
           domain_id: id,
@@ -509,6 +527,9 @@ router.post('/:id/ingest', async (req, res) => {
         if (snapErr) return res.status(400).json({ error: snapErr.message });
         snapshotWritten.add(keyHash);
       }
+
+      // Track keys used in this ingest to detect intra-file duplicates
+      seenIngest.add(keyHash);
     }
 
     // Update current_version on domain
