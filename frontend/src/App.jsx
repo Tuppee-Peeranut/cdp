@@ -94,6 +94,8 @@ import * as XLSX from "xlsx";
  * @property {ValidationIssue[]} issues // combined
  * @property {BatchRow[]} rows
  * @property {RuleResult[]} ruleResults // per-rule
+ * @property {any[]=} rawRows // original parsed rows for profiling/QA
+ * @property {string[]=} rawColumns // original column headers
  */
 
 /**
@@ -326,6 +328,73 @@ async function askOpenAI(apiKey, model, userPrompt, context, accessToken) {
   }
   const json = await res.json();
   return json.choices?.[0]?.message?.content || "(no response)";
+}
+
+// ----------------------- Local QA ---------------------------
+/**
+ * Answer simple data profiling questions locally without LLM.
+ * Supports prompts like: "null count in Province column"
+ * @param {string} prompt
+ * @param {Batch|null} batch
+ * @returns {string|null}
+ */
+function answerLocalQuestion(prompt, batch) {
+  if (!prompt || !batch) return null;
+  const text = String(prompt).trim();
+  // Normalize spacing and quotes for parsing
+  const t = text.replace(/[“”]/g, '"').replace(/[’']/g, "'");
+
+  const rows = (batch.rawRows && batch.rawRows.length ? batch.rawRows : batch.rows) || [];
+  const allColumns = (batch.rawColumns && batch.rawColumns.length ? batch.rawColumns : Object.keys(rows[0] || {})) || [];
+  const rowCount = rows.length;
+
+  if (!rowCount || !allColumns.length) return null;
+
+  // Try to extract column name from patterns like:
+  // - null count in Province column
+  // - null count for "Province"
+  // - how many null in 'Province'
+  // - missing count in Province
+  const patterns = [
+    /\b(?:null|missing)\s+count\s+(?:in|for)\s+\"([^\"]+)\"/i,
+    /\b(?:null|missing)\s+count\s+(?:in|for)\s+'([^']+)'/i,
+    /\b(?:null|missing)\s+count\s+(?:in|for)\s+([A-Za-z0-9_.\- ]+)\s+column\b/i,
+    /\bhow\s+many\s+(?:null|missing)\s+(?:in|for)\s+\"([^\"]+)\"/i,
+    /\bhow\s+many\s+(?:null|missing)\s+(?:in|for)\s+'([^']+)'/i,
+    /\bhow\s+many\s+(?:null|missing)\s+(?:in|for)\s+([A-Za-z0-9_.\- ]+)/i,
+  ];
+
+  let col = null;
+  for (const rx of patterns) {
+    const m = t.match(rx);
+    if (m && m[1]) { col = m[1].trim(); break; }
+  }
+
+  if (!col) {
+    // Fallback: look for pattern "in X column" if prompt contains 'null'
+    if (/\bnull\b|\bmissing\b/i.test(t)) {
+      const m = t.match(/\bin\s+([A-Za-z0-9_.\- ]+)\s+column\b/i);
+      if (m && m[1]) col = m[1].trim();
+    }
+  }
+
+  if (!col) return null;
+
+  // Attempt to resolve to an existing column (case-insensitive)
+  const byLower = new Map(allColumns.map((c) => [String(c).toLowerCase(), c]));
+  const resolved = byLower.get(col.toLowerCase());
+  if (!resolved) {
+    return `Column "${col}" not found. Available: ${allColumns.slice(0, 10).join(', ')}${allColumns.length > 10 ? ', ...' : ''}`;
+  }
+
+  // Compute null/missing count: treat null, undefined, empty string as missing
+  let missing = 0;
+  for (const r of rows) {
+    const v = r?.[resolved];
+    if (v === null || v === undefined || v === '') missing++;
+  }
+  const pct = rowCount ? Math.round((missing / rowCount) * 100) : 0;
+  return `Null count in ${resolved}: ${missing} of ${rowCount} rows (${pct}%)`;
 }
 
 // ----------------------- UI Primitives ----------------------
@@ -1540,6 +1609,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       issues: combined,
       rows,
       ruleResults: perRule,
+      rawRows,
+      rawColumns,
     };
     setCurrentBatch(batch);
 
@@ -1670,6 +1741,13 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       const thinkId = uid("thinking");
       setPendingId(thinkId);
       setMessages((m) => [...m, { role: 'assistant', type: 'thinking', id: thinkId }]);
+      // Try local QA first for quick, offline answers
+      const local = answerLocalQuestion(question, currentBatch);
+      if (local) {
+        setMessages((m) => m.filter((mm) => mm.id !== thinkId));
+        setMessages((m) => [...m, { role: "assistant", type: "text", content: local }]);
+        return;
+      }
       const ctx = {
         rulesets,
         lastBatch: currentBatch
@@ -1680,6 +1758,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
               issues: currentBatch.issues,
               ruleResults: currentBatch.ruleResults,
               sampleRows: currentBatch.rows.slice(0, 20),
+              columns: currentBatch.rawColumns || Object.keys((currentBatch.rows || [])[0] || {}),
             }
           : null,
       };
