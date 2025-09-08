@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { login, ensureUserRole, logout, signupSuperAdmin } from './auth.js';
 import { Loader2 } from 'lucide-react';
 
-const INVITE_CODE = import.meta.env.SUPERADMIN_INVITATION_CODE;
+// Use Vite-exposed env var (must be prefixed with VITE_)
+const INVITE_CODE = import.meta.env.VITE_SUPERADMIN_INVITATION_CODE;
 
 export default function SuperAdminLogin() {
   const [form, setForm] = useState({ email: '', password: '', code: '' });

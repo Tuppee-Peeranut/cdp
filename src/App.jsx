@@ -1578,8 +1578,10 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       const tenantId = user?.user_metadata?.tenant_id || user?.app_metadata?.tenant_id || '00000000-0000-0000-0000-000000000001';
       const bucket = 'domains';
       const key = `${tenantId}/${domain}/${Date.now()}_${file.name}`;
-      // Ensure bucket manually (optional): assume created in Supabase as 'domains'
-      // Ensure bucket exists via backend
+      // Prepare auth headers (must come before ensure-bucket)
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      const authHeaders = token ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+      // Ensure bucket exists via backend (uses service key on server)
       try {
         await fetch('/api/storage/ensure-bucket', {
           method: 'POST',
@@ -1591,8 +1593,6 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       if (upErr) throw upErr;
 
       // Find or create the domain in API
-      const token = (await supabase.auth.getSession()).data?.session?.access_token;
-      const authHeaders = token ? { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
       let domId = null;
       const listRes = await fetch('/api/domains', { headers: authHeaders });
       if (listRes.ok) {
