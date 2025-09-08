@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
+import nodePath from 'path';
 import { supabaseAdmin } from './supabaseClient.js';
 import { authorize } from './auth/supabaseAuth.js';
 import { auditLog } from './auth/superAdmin.js';
@@ -191,7 +192,46 @@ router.get('/:id/preview', async (req, res) => {
     .eq('domain_id', id)
     .range(offset, offset + limit - 1);
   if (error) return res.status(400).json({ error: error.message });
-  res.json((data || []).map((r) => r.record));
+  const { data: latest } = await supabaseAdmin
+    .from('domain_versions')
+    .select('id')
+    .eq('domain_id', id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const versionId = latest?.id || null;
+  res.json((data || []).map((r) => ({ ...r.record, source_version_id: versionId })));
+});
+
+// Preview latest version's historical data (rows captured for the latest version)
+router.get('/:id/version/latest/preview', async (req, res) => {
+  const { id } = req.params;
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const offset = Math.max(parseInt(req.query.offset || '0', 10), 0);
+  const tenantId = await resolveTenantId(req);
+  const { data: dom } = await supabaseAdmin.from('domains').select('tenant_id, current_version_id').eq('id', id).single();
+  if (!dom || dom.tenant_id !== tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+  // Find latest domain_version for this domain
+  const { data: latest, error: vErr } = await supabaseAdmin
+    .from('domain_versions')
+    .select('id')
+    .eq('domain_id', id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (vErr) return res.status(400).json({ error: vErr.message });
+  if (!latest?.id) return res.json([]);
+
+  // Fetch rows from domain_history for that version
+  const { data, error } = await supabaseAdmin
+    .from('domain_history')
+    .select('record, source_version_id')
+    .eq('domain_id', id)
+    .eq('source_version_id', latest.id)
+    .range(offset, offset + limit - 1);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json((data || []).map((r) => ({ ...r.record, source_version_id: r.source_version_id })));
 });
 
 // Clean endpoint - apply transforms of enabled rules to current data
@@ -364,13 +404,16 @@ router.post('/:id/ingest', async (req, res) => {
     const userId = req.user?.id;
     const { path } = req.body || {};
     if (!path) return res.status(400).json({ error: 'path required (e.g., key in storage bucket "domains")' });
+    const storageKey = path;
+    const fileExt = nodePath.extname(storageKey || '').toLowerCase();
+    const fileName = nodePath.basename(storageKey || '');
 
     // Domain ownership check
     const domain = await getDomain(supabaseAdmin, id);
     if (!domain || domain.tenant_id !== tenantId) return res.status(403).json({ error: 'Forbidden' });
 
     // Download file from storage
-    const { data: blob, error: dlErr } = await supabaseAdmin.storage.from('domains').download(path);
+    const { data: blob, error: dlErr } = await supabaseAdmin.storage.from('domains').download(storageKey);
     if (dlErr) return res.status(400).json({ error: dlErr.message });
     const buf = Buffer.from(await blob.arrayBuffer());
 
@@ -379,30 +422,49 @@ router.post('/:id/ingest', async (req, res) => {
     const sheetName = wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
-    const columns = Object.keys(XLSX.utils.sheet_to_json(ws, { header: 1 })[0] || {});
+    // Derive columns from the actual header row (A1), not array indexes
+    const a1 = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+    const headerRow = Array.isArray(a1?.[0]) ? a1[0] : [];
+    const columns = (headerRow || [])
+      .map((c) => String(c ?? '').trim())
+      .filter((c) => c.length > 0);
     const rows_count = rows.length;
 
     // Insert domain_version
+    const isDelimitedText = ['.csv', '.tsv', '.txt'].includes(fileExt);
+    const baseName = fileName ? fileName.replace(new RegExp((fileExt || '').replace('.', '\\.') + '$', 'i'), '') : null;
     const versionPayload = {
       domain_id: id,
-      file_path: path,
+      file_path: storageKey,
       rows_count,
       columns: columns.length ? columns : Object.keys(rows[0] || {}),
-      import_summary: { sheet: sheetName },
+      import_summary: {
+        sheet: isDelimitedText ? baseName : sheetName,
+        file_name: fileName || null,
+        ext: fileExt || null,
+      },
     };
     const { data: ver, error: verErr } = await supabaseAdmin
       .from('domain_versions').insert(versionPayload).select().single();
     if (verErr) return res.status(400).json({ error: verErr.message });
 
-    // Compute business key
-    const bk = Array.isArray(domain.business_key) && domain.business_key.length
-      ? domain.business_key
-      : Object.keys(rows[0] || {}).slice(0, 1);
+    // Compute business key safely based on available columns
+    const rowKeys = Object.keys(rows[0] || {});
+    let bk = Array.isArray(domain.business_key) && domain.business_key.length ? domain.business_key : [];
+    // Keep only keys that actually exist in the parsed rows
+    bk = bk.filter((k) => k && rowKeys.includes(k));
+    // Fallback to all available columns if no valid domain business key
+    if (!bk.length) bk = rowKeys.filter((k) => String(k || '').trim().length > 0);
+    // Final fallback: per-row index ensures unique keys for this ingest if sheet has no headers
+    if (!bk.length) bk = ['__row_index'];
 
     // Upsert current data and write history on changes
-    for (const r of rows) {
-      const keyValues = Object.fromEntries(bk.map((k) => [k, r[k] ?? null]));
-      const keyHash = sha256(bk.map((k) => r[k] ?? '').join('|'));
+    // Also write a snapshot of the newly ingested record for this version (once per key)
+    const snapshotWritten = new Set();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const keyValues = Object.fromEntries(bk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
+      const keyHash = sha256(bk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
       const record = r;
 
       // Fetch existing
@@ -415,17 +477,9 @@ router.post('/:id/ingest', async (req, res) => {
       if (exErr) return res.status(400).json({ error: exErr.message });
 
       if (existing?.record) {
-        // If changed, archive old and update current
+        // If changed, update current (history snapshot of new is handled below)
         const changed = JSON.stringify(existing.record) !== JSON.stringify(record);
         if (changed) {
-          const { error: histErr } = await supabaseAdmin.from('domain_history').insert({
-            domain_id: id,
-            key_hash: keyHash,
-            key_values: keyValues,
-            record: existing.record,
-            source_version_id: ver.id,
-          });
-          if (histErr) return res.status(400).json({ error: histErr.message });
           const { error: updErr } = await supabaseAdmin
             .from('domain_data')
             .update({ record, key_values: keyValues, updated_at: new Date().toISOString() })
@@ -441,6 +495,19 @@ router.post('/:id/ingest', async (req, res) => {
           record,
         });
         if (insErr) return res.status(400).json({ error: insErr.message });
+      }
+
+      // Snapshot the newly received/current record for this version (once per key)
+      if (!snapshotWritten.has(keyHash)) {
+        const { error: snapErr } = await supabaseAdmin.from('domain_history').insert({
+          domain_id: id,
+          key_hash: keyHash,
+          key_values: keyValues,
+          record,
+          source_version_id: ver.id,
+        });
+        if (snapErr) return res.status(400).json({ error: snapErr.message });
+        snapshotWritten.add(keyHash);
       }
     }
 
