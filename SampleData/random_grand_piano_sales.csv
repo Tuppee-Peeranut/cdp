@@ -1,0 +1,51 @@
+Year,Month,Type,Model,Finished,Customer name,Business,Sold by,Remark,Unit,Amount,Type of customers,Purpose,Gender,Age
+FY24/25,06_September,Hybrid,214VC Secession,WHPC,Bob,Music School,Yamaha HQ,Discounted,2.0,40000.0,Yamaha student,Decoration,Female,51-60
+FY21/22,10_January,Grand,GC1,PWH,Jane Smith,Music School,,,,20000.0,Display,Display at YMS,,60+
+FY22/23,05_August,Baby Grand,DC5X,PWH,Bob,Music School,,,3.0,30000.0,Yamaha student,School equipment,,51-60
+FY23/24,06_September,Premium Grand,DGC1,PWH,Jane Smith,Concert Hall,Yamaha HQ,,,10000.0,,Entertainment,Female,20-30
+FY25/26,12_March,Grand,DC7X,WHPC,Jane Smith,Concert Hall,Dealer B,Urgent,1.0,40000.0,Yamaha student,Hobby,Female,60+
+FY23/24,05_August,Grand,GB1K,,Alice,Dealer,Dealer A,Discounted,,20000.0,General customer,Display,Female,60+
+FY23/24,06_September,Grand,GB1K,PE,Yamaha Corp,Concert Hall,Yamaha HQ,,3.0,50000.0,General customer,Display,Female,41-50
+FY25/26,12_March,Premium Grand,GC1,PE,,,Dealer A,,2.0,,Display,Decoration,Female,31-40
+FY24/25,01_April,Premium Grand,DGC1,WHPC,Jane Smith,Concert Hall,Dealer B,Discounted,2.0,10000.0,Project,Decoration,Female,41-50
+FY23/24,06_September,Hybrid,GB1K,PWH,John Doe,Music School,Dealer A,Discounted,2.0,50000.0,Yamaha student,Display at YMS,Male,
+FY21/22,02_May,Premium Grand,GC1,WHPC,Yamaha Corp,Concert Hall,,,3.0,10000.0,Project,Hobby,Female,51-60
+FY23/24,03_June,Baby Grand,C6X,,Jane Smith,Concert Hall,Yamaha HQ,Discounted,3.0,50000.0,General customer,School equipment,Male,20-30
+FY25/26,09_December,Baby Grand,DC7X,PE,Bob,Music School,Dealer A,Discounted,1.0,10000.0,Project,School equipment,Male,60+
+FY22/23,03_June,Premium Grand,214VC Secession,WHPC,Jane Smith,Private,,,2.0,,Yamaha student,,Male,41-50
+FY24/25,12_March,Grand,DGC1,PE,John Doe,Dealer,Dealer B,VIP,2.0,30000.0,General customer,Display,Male,60+
+FY25/26,12_March,Baby Grand,DGB1K,PE,Jane Smith,Concert Hall,Yamaha HQ,Discounted,2.0,,Display,Hobby,Female,20-30
+FY22/23,03_June,Baby Grand,DGB1K,PE,John Doe,Concert Hall,,Urgent,1.0,30000.0,Project,Business,Female,51-60
+FY25/26,09_December,Grand,DGC1,PE,Yamaha Corp,,Dealer B,VIP,1.0,30000.0,Display,Entertainment,,31-40
+FY23/24,04_July,Hybrid,C3X,PWH,Alice,,Dealer B,VIP,2.0,40000.0,Display,Decoration,Female,
+FY25/26,06_September,Hybrid,DC5X,PWH,Yamaha Corp,Concert Hall,Dealer A,Discounted,2.0,20000.0,Yamaha student,Decoration,Female,60+
+FY25/26,09_December,Hybrid,DC3X,PE,Alice,Concert Hall,,VIP,,50000.0,Project,School equipment,Male,41-50
+FY22/23,02_May,Hybrid,DC5X,PWH,Jane Smith,Dealer,Dealer B,Urgent,3.0,50000.0,Display,Entertainment,Male,41-50
+FY22/23,04_July,Premium Grand,C6X,WHPC,Jane Smith,Dealer,Dealer A,Discounted,3.0,20000.0,Project,Education,Female,20-30
+FY23/24,11_February,Grand,DC7X,,Yamaha Corp,Dealer,Dealer B,Discounted,,,Yamaha student,School equipment,Male,
+FY25/26,08_November,Hybrid,C6X,PE,Jane Smith,Dealer,,Urgent,3.0,,Project,Hobby,Male,
+FY23/24,03_June,Premium Grand,GB1K,PE,Jane Smith,Private,Dealer B,VIP,1.0,30000.0,General customer,,Male,51-60
+FY21/22,01_April,Premium Grand,GB1K,WHPC,,,Yamaha HQ,Discounted,,20000.0,Yamaha student,School equipment,,41-50
+FY21/22,02_May,Hybrid,DC5X,WHPC,John Doe,Private,Dealer B,Discounted,3.0,40000.0,General customer,Display at YMS,Female,31-40
+FY23/24,07_October,Grand,GC1,,Yamaha Corp,Music School,Dealer B,Discounted,,,Yamaha student,Display,Male,41-50
+FY25/26,10_January,Baby Grand,C3X,PE,Alice,,,VIP,1.0,,Display,Education,Female,41-50
+FY21/22,05_August,Premium Grand,GC1,PWH,Yamaha Corp,Music School,Yamaha HQ,VIP,2.0,,Display,Decoration,Male,60+
+FY24/25,01_April,Baby Grand,C3X,PE,John Doe,Private,Dealer B,Urgent,,,Display,Business,Male,60+
+FY21/22,05_August,Premium Grand,DC7X,PWH,John Doe,Private,Dealer A,VIP,3.0,,Display,Display at YMS,Male,41-50
+FY23/24,05_August,Premium Grand,C1X,PE,Jane Smith,Concert Hall,Yamaha HQ,VIP,1.0,20000.0,,School equipment,Female,20-30
+FY21/22,05_August,Grand,DC3X,WHPC,Yamaha Corp,,,,3.0,20000.0,Project,Decoration,Male,31-40
+FY22/23,05_August,Hybrid,DC5X,,Yamaha Corp,Dealer,Yamaha HQ,VIP,2.0,20000.0,Display,Business,Male,41-50
+FY21/22,02_May,Grand,DGC1,PWH,,,,Urgent,1.0,40000.0,Display,Decoration,Male,60+
+FY25/26,07_October,Baby Grand,DC5X,PWH,Yamaha Corp,Concert Hall,,,,,Display,Business,Female,
+FY21/22,01_April,Baby Grand,C7X,PE,John Doe,Dealer,Dealer A,Urgent,,40000.0,Project,Business,Female,20-30
+FY21/22,07_October,Premium Grand,C5X,PE,,,,VIP,3.0,20000.0,Display,Entertainment,Female,20-30
+FY24/25,09_December,Premium Grand,DGB1K,PE,,Private,Dealer B,Urgent,1.0,50000.0,Display,,Female,51-60
+FY24/25,04_July,Hybrid,DC7X,PE,Yamaha Corp,Concert Hall,,,1.0,40000.0,General customer,Entertainment,Female,
+FY21/22,08_November,Premium Grand,DGC1,WHPC,Alice,Dealer,Yamaha HQ,VIP,2.0,50000.0,General customer,Display,Male,31-40
+FY25/26,10_January,Grand,DGC1,PWH,,Dealer,Dealer A,Discounted,2.0,10000.0,General customer,Education,Male,41-50
+FY25/26,06_September,Baby Grand,S7X,PWH,Alice,,,VIP,1.0,50000.0,Display,School equipment,Male,41-50
+FY21/22,07_October,Hybrid,C7X,WHPC,Bob,Music School,Dealer B,,1.0,10000.0,General customer,Display at YMS,Male,51-60
+FY24/25,03_June,Hybrid,C5X,PWH,,Concert Hall,Yamaha HQ,Urgent,2.0,20000.0,,Display at YMS,Male,60+
+FY24/25,05_August,Grand,C6X,PWH,Alice,Concert Hall,Dealer B,Discounted,1.0,30000.0,General customer,Entertainment,Male,51-60
+FY21/22,02_May,Hybrid,C3X,WHPC,Jane Smith,Music School,Dealer A,Urgent,,50000.0,Display,Education,Female,31-40
+FY22/23,03_June,Baby Grand,S7X,WHPC,Yamaha Corp,Concert Hall,Dealer B,VIP,,20000.0,Project,Hobby,Female,20-30

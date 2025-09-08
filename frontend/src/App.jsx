@@ -121,7 +121,7 @@ import * as XLSX from "xlsx";
 /**
  * @typedef ChatMessage
  * @property {"user"|"assistant"|"system"} role
- * @property {"text"|"file"|"validation"|"summary"} type
+ * @property {"text"|"file"|"validation"|"summary"|"preview"} type
  * @property {string} content
  * @property {any=} payload
  */
@@ -397,6 +397,165 @@ function answerLocalQuestion(prompt, batch) {
   return `Null count in ${resolved}: ${missing} of ${rowCount} rows (${pct}%)`;
 }
 
+/**
+ * Detect simple rule commands like "dedup by <column>".
+ * Returns a normalized descriptor or null.
+ */
+function detectRuleCommand(text) {
+  if (!text) return null;
+  const t = String(text).trim();
+  // Dedup by <column>
+  const dedupRxes = [
+    /^\s*(?:dedup|dedupe|deduplicate)\s+(?:by\s+)?\"([^\"]+)\"\s*$/i,
+    /^\s*(?:dedup|dedupe|deduplicate)\s+(?:by\s+)?'([^']+)'\s*$/i,
+    /^\s*(?:dedup|dedupe|deduplicate)\s+(?:by\s+)?([A-Za-z0-9_.\- ]+)\s*$/i,
+  ];
+  for (const rx of dedupRxes) {
+    const m = t.match(rx);
+    if (m && m[1]) return { kind: 'dedup', column: m[1].trim() };
+  }
+  return null;
+}
+
+/**
+ * Build a small preview of the effect of a rule command on rows.
+ * Currently supports dedup by column (keeps first occurrence).
+ */
+function previewForRuleCommand(descriptor, rows) {
+  if (!descriptor || !Array.isArray(rows)) return { columns: [], rows: [] };
+  const sampleRows = rows.slice(0, 1000); // cap for speed
+  if (descriptor.kind === 'dedup' && descriptor.column) {
+    const colLower = descriptor.column.toLowerCase();
+    // Resolve actual column case from first row keys
+    const cols = Object.keys(sampleRows[0] || {});
+    const byLower = new Map(cols.map((c) => [String(c).toLowerCase(), c]));
+    const resolved = byLower.get(colLower) || descriptor.column;
+    const seen = new Set();
+    const out = [];
+    for (const r of sampleRows) {
+      const key = String(r?.[resolved] ?? '').toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: cols, rows: out };
+  }
+  return { columns: Object.keys(sampleRows[0] || {}), rows: sampleRows.slice(0, 20) };
+}
+
+// ---------------- AI Rule Generator ------------------------
+/**
+ * Generate a rule JSON from a natural-language command.
+ * Returns { name: string, definition: object }
+ */
+async function generateRuleFromText(command, columns, accessToken) {
+  const sys = `You convert short data quality commands into a strict JSON rule.
+Rules are stored and later executed by a simple engine that supports only:
+- transforms: trim, uppercase, lowercase, normalize_whitespace, replace{from,to}, map{column,mapping{}}, coalesce{column,values[]}
+- checks: regex{column,pattern}
+Everything else must go under meta as documentation, not executable logic.
+Return ONLY JSON. No markdown, no commentary.`;
+  const guidance = {
+    columns: Array.isArray(columns) ? columns.slice(0, 60) : [],
+    schema: {
+      name: "string: concise rule name",
+      category: "dedup | enrichment | cross_field",
+      definition: {
+        transforms: "optional array of supported transforms",
+        checks: "optional array of supported checks",
+        meta: "any extra details for unsupported logic like dedup keys or cross-field expressions",
+      },
+    },
+    examples: [
+      {
+        command: "dedup by email keep latest",
+        output: {
+          name: "Dedup by email (latest)",
+          category: "dedup",
+          definition: {
+            transforms: [],
+            checks: [],
+            meta: { type: "dedup", keys: ["email"], keep: "last" }
+          }
+        }
+      },
+      {
+        command: "enrich bank_name from bank_code mapping (001: BBL, 002: KTB)",
+        output: {
+          name: "Enrich bank_name from bank_code",
+          category: "enrichment",
+          definition: {
+            transforms: [{ name: "map", column: "bank_code", mapping: { "001": "BBL", "002": "KTB" } }],
+            checks: [],
+            meta: { writes: [{ from: "bank_code", to: "bank_name" }] }
+          }
+        }
+      },
+      {
+        command: "amount must be > 0 when status is ACTIVE",
+        output: {
+          name: "Amount positive when ACTIVE",
+          category: "cross_field",
+          definition: {
+            transforms: [],
+            checks: [],
+            meta: { expression: "IF status == 'ACTIVE' THEN amount > 0", columns: ["status","amount"] }
+          }
+        }
+      }
+    ]
+  };
+  const body = {
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: `Columns: ${JSON.stringify(guidance.columns)}\nGuidance: ${JSON.stringify(guidance.schema)}\nExamples: ${JSON.stringify(guidance.examples)}\n\nCommand: ${command}\nOutput JSON:` },
+    ],
+    temperature: 0,
+  };
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Rule AI error ${res.status}`);
+  const api = await res.json();
+  let content = api?.choices?.[0]?.message?.content || '';
+  content = String(content).trim();
+  // Strip code fences if present
+  let clean = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  // If the model returned the whole JSON as string inside JSON, try to extract braces
+  if (clean && (clean.indexOf('{') === -1 || clean.indexOf('}') === -1)) {
+    const first = content.indexOf('{');
+    const last = content.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) clean = content.slice(first, last + 1);
+  }
+  let json;
+  try { json = JSON.parse(clean); } catch (e) {
+    // Fallback: create a meta-only rule so it can be saved and edited later
+    return {
+      name: String(command).slice(0, 120),
+      definition: { meta: { note: 'Unparsed AI output', original: content } },
+    };
+  }
+  // Some models might nest under 'rule'
+  if (json && !json.name && json.rule) json = json.rule;
+  if (!json || !json.definition) {
+    return {
+      name: String(json?.name || command).slice(0, 120),
+      definition: { meta: { note: 'Incomplete AI output', original: content } },
+    };
+  }
+  const def = json.definition || {};
+  if (!def.meta) def.meta = {};
+  if (json.category && !def.meta.category) def.meta.category = json.category;
+  return { name: String(json.name).slice(0, 120), definition: def };
+}
+
 // ----------------------- UI Primitives ----------------------
 function SidebarButton({ icon: Icon, label, active, onClick, right }) {
   return (
@@ -520,6 +679,9 @@ function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
             domain={domain}
           />
         )}
+        {msg.type === "preview" && msg.payload && (
+          <PreviewTable payload={msg.payload} />
+        )}
         {(msg.type === "text" || msg.type === "summary") && (
           <div className="whitespace-pre-wrap leading-relaxed text-sm">{msg.content}</div>
         )}
@@ -583,6 +745,34 @@ function ValidationPanel({ payload, rulesets = [], setRulesets, domain }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function PreviewTable({ payload }) {
+  const { columns = [], rows = [] } = payload || {};
+  const cols = Array.isArray(columns) && columns.length ? columns : Object.keys(rows[0] || {});
+  const sample = Array.isArray(rows) ? rows : [];
+  return (
+    <div className="border rounded overflow-auto max-h-[50vh]">
+      <table className="min-w-full text-xs">
+        <thead className="bg-neutral-100 sticky top-0">
+          <tr>
+            {cols.map((c) => (
+              <th key={c} className="text-left px-2 py-1 border-b border-neutral-200">{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sample.map((row, idx) => (
+            <tr key={idx} className="border-b border-neutral-100">
+              {cols.map((c) => (
+                <td key={c} className="px-2 py-1 whitespace-nowrap">{String(row?.[c] ?? '')}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1238,6 +1428,10 @@ function DomainRulesInline({ domainId }) {
 function RulesPanel({ domainId, onClose }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [columns, setColumns] = useState([]);
+  const [cmd, setCmd] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState("");
   useEffect(() => {
     (async () => {
       try {
@@ -1245,6 +1439,15 @@ function RulesPanel({ domainId, onClose }) {
         const res = await fetch(`/api/domains/${domainId}/rules`, { headers: { Authorization: `Bearer ${token}` } });
         const list = res.ok ? await res.json() : [];
         setRules(list || []);
+        try {
+          const vr = await fetch(`/api/domains/${domainId}/versions`, { headers: { Authorization: `Bearer ${token}` } });
+          if (vr.ok) {
+            const vs = await vr.json();
+            const latest = Array.isArray(vs) && vs.length ? vs[0] : null;
+            const cols = latest?.columns || [];
+            if (Array.isArray(cols)) setColumns(cols);
+          }
+        } catch {}
       } finally { setLoading(false); }
     })();
   }, [domainId]);
@@ -1252,6 +1455,24 @@ function RulesPanel({ domainId, onClose }) {
     const token = (await supabase.auth.getSession()).data?.session?.access_token;
     const res = await fetch(`/api/domains/${domainId}/rules/${rid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(patch) });
     if (res.ok) setRules((rs) => rs.map((r) => (r.id === rid ? { ...r, ...patch } : r)));
+  };
+  const generate = async () => {
+    if (!cmd.trim()) return;
+    setError("");
+    try {
+      setGenerating(true);
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      const out = await generateRuleFromText(cmd.trim(), columns, token);
+      const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: out.name, definition: out.definition }) });
+      if (!res.ok) throw new Error((await res.json()).error || 'Create failed');
+      const created = await res.json();
+      setRules((rs) => [created, ...rs]);
+      setCmd("");
+    } catch (e) {
+      setError(e.message || 'Failed to generate');
+    } finally {
+      setGenerating(false);
+    }
   };
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
@@ -1656,6 +1877,12 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
         (dups ? ` · ~${dups} duplicate rows` : '') + (topMissing ? ` · top missing: ${topMissing}` : '');
       setMessages((m) => [...m, { role: 'assistant', type: 'summary', content: (summary.split(' A� ').join(' · ') + (rowCount > Math.min(rowCount, 10000) ? ` (first ${Math.min(rowCount, 10000)} rows)` : '')) }]);
     } catch {}
+    // Add preview table of first rows
+    try {
+      const cols = (rawColumns && rawColumns.length) ? rawColumns : Object.keys(rows[0] || {});
+      const previewRows = (rawRows && rawRows.length ? rawRows : rows).slice(0, Math.min(20, rowCount));
+      setMessages((m) => [...m, { role: 'assistant', type: 'preview', content: 'Preview', payload: { columns: cols, rows: previewRows } }]);
+    } catch {}
     addToast("File uploaded");
 
     // Persist to domain backend (SCD Type 4): upload to storage and trigger ingest
@@ -1741,6 +1968,47 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       const thinkId = uid("thinking");
       setPendingId(thinkId);
       setMessages((m) => [...m, { role: 'assistant', type: 'thinking', id: thinkId }]);
+      // Try inline rule command (e.g., "Dedup by <Column>")
+      try {
+        const cmd = detectRuleCommand(question);
+        if (cmd) {
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          let cols = currentBatch?.rawColumns || Object.keys((currentBatch?.rows || [])[0] || {});
+          if ((!cols || cols.length === 0) && domainId && token) {
+            try {
+              const vr = await fetch(`/api/domains/${domainId}/versions`, { headers: { Authorization: `Bearer ${token}` } });
+              if (vr.ok) {
+                const vs = await vr.json();
+                cols = (vs?.[0]?.columns) || cols;
+              }
+            } catch {}
+          }
+          const out = await generateRuleFromText(question, cols || [], token);
+          if (domainId && token) {
+            const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: out.name, definition: out.definition }) });
+            if (!res.ok) throw new Error((await res.json()).error || 'Create rule failed');
+            setServerRuleCount((c) => (c == null ? 1 : c + 1));
+            setMessages((m) => m.filter((mm) => mm.id !== thinkId));
+            setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Rule "${out.name}" created from your command.` }]);
+          } else {
+            setMessages((m) => m.filter((mm) => mm.id !== thinkId));
+            setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Previewing rule "${out.name}" (no active domain to save).` }]);
+          }
+          // Build preview rows from current batch or domain preview
+          let previewRowsSrc = currentBatch?.rawRows || currentBatch?.rows || [];
+          if ((!previewRowsSrc || previewRowsSrc.length === 0) && domainId && token) {
+            try {
+              const pr = await fetch(`/api/domains/${domainId}/preview?limit=50`, { headers: { Authorization: `Bearer ${token}` } });
+              if (pr.ok) previewRowsSrc = await pr.json();
+            } catch {}
+          }
+          if (previewRowsSrc && previewRowsSrc.length) {
+            const pv = previewForRuleCommand(cmd, previewRowsSrc);
+            setMessages((m) => [...m, { role: 'assistant', type: 'preview', content: 'Preview', payload: pv }]);
+          }
+          return;
+        }
+      } catch {}
       // Try local QA first for quick, offline answers
       const local = answerLocalQuestion(question, currentBatch);
       if (local) {
