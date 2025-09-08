@@ -10,23 +10,43 @@ ChatGPT-style web app for **Customers** and **Products** with Excel/CSV upload, 
 ```bash
 npm install
 npm run dev
-# open the printed localhost URL
-# super admin dashboard available at /super-admin
-# super admin login available at /super-admin/login
+# Frontend runs at http://localhost:5173
+# Backend runs at http://localhost:3001
+# Super admin dashboard at /super-admin
+# Super admin login at /super-admin/login
 ```
 In the profile menu's **Feature Preview**, paste your OpenAI API Key to enable the **Ask** feature.
 
-## Supabase Setup
+## Monorepo Layout
+- `frontend/`: Vite + React app
+- `backend/`: Express API and Supabase integration
+- `scripts/`, `docs/`, `.github/`: tooling and docs
+
+Each side has its own package.json and environment file examples.
+
+## Supabase Setup (Frontend)
 
 1. Sign up at [Supabase](https://supabase.com/) and create a project.
 2. From the project dashboard copy the **Project URL** and **anon public key**.
-3. Create a `.env` file in the project root containing:
+3. Create a `frontend/.env.local` file containing:
 
    ```bash
    VITE_SUPABASE_URL=https://your-project.supabase.co
    VITE_SUPABASE_ANON_KEY=your-anon-key
    ```
 4. Restart the dev server after adding these variables.
+
+## Server Environment (Backend)
+
+Create `backend/.env` with the required variables (see `backend/.env.example`):
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_KEY`
+- `SUPABASE_JWT_SECRET`
+- `OPENAI_API_KEY`
+- `SUPERADMIN_SEED_EMAIL`
+- `SUPERADMIN_SEED_PASSWORD`
+- `SUPERADMIN_INVITATION_CODE`
 
 ## Environment Variables
 
@@ -74,6 +94,7 @@ This project supports OpenID Connect authentication. Configure the following env
 These values define the client ID, redirect URIs, and scopes used during the authorization code flow.
 
 ## Files
-- `src/App.jsx` – Single-file app UI/logic.
-- Tailwind configured via `postcss` + `tailwind.config.js`.
+- Frontend entry: `frontend/index.html`, `frontend/src/main.jsx`
+- Tailwind: `frontend/tailwind.config.js`, `frontend/postcss.config.js`
+- Backend entry: `backend/server/index.js`
 # cdp

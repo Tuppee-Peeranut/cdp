@@ -1,2 +1,0 @@
-{"timestamp":"2025-08-21T12:10:22.536Z","event":"login_failed","method":"oidc","error":null}
-{"timestamp":"2025-08-21T12:55:48.834Z","event":"login_success","userId":1,"username":"max"}
