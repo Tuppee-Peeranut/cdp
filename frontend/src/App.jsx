@@ -301,9 +301,15 @@ function validateWithRules(rows, rulesets, domain) {
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
 async function askOpenAI(apiKey, model, userPrompt, context, accessToken) {
   const sys = `You are dP Copilot, a careful data platform assistant.
-- Explain validations and suggest fixes succinctly.
-- Never fabricate banking details.
-- If asked to "submit", remind that this MVP only simulates submission.`;
+Answer concisely with quantitative results using the provided Columns, Profile, and sampleRows.
+Rules:
+- Prefer exact counts/percentages from Profile when available.
+- Use one-line factual answers unless asked for details.
+- When asked to SHOW or list distinct values for a column, output a concise inline list of the values (use Profile.distinctValues[col] if available, otherwise Profile.topValues[col] limited to top 10 with counts). Example: Distinct values in Type: "A", "B", "C", "D".
+- Format examples: "5.3% of rows have NULL in CustomerName"; "124 duplicates found in NationalID"; "12 rows have Birthdate in the future"; "Min Age = 1, Max Age = 97"; "Distinct values in Type: X, Y, Z".
+- If Profile is based on a sample, append: "(based on sample of N rows)".
+- Do not invent columns not present. Use the column names exactly as given in Columns.
+- If a requested column is missing, say so briefly and suggest 3-5 closest column names.`;
   const ctx = JSON.stringify(context).slice(0, 12000);
   const body = {
     model: model || "gpt-4o-mini",
@@ -556,6 +562,76 @@ function previewForRuleCommand(descriptor, rows) {
   }
 
   return { columns: baseCols, rows: sampleRows.slice(0, 20) };
+}
+
+// ---------------- Data Profiling Helpers -------------------
+function buildBatchProfile(rows, columns, opts = {}) {
+  const limit = Math.min(opts.limit || 10000, 10000);
+  const sample = (rows || []).slice(0, limit);
+  const cols = Array.isArray(columns) && columns.length ? columns : Object.keys(sample[0] || {});
+  const rowCount = sample.length;
+  const profile = {
+    basis: rowCount,
+    columns: cols,
+    nullCounts: {},
+    distinctCounts: {},
+    duplicateCounts: {},
+    numericStats: {}, // col -> {count,min,max}
+    dateStats: {}, // col -> {min,max,futureCount}
+    regexInvalid: {}, // col -> {pattern, invalid}
+    topValues: {}, // col -> [{value,count}]
+    distinctValues: {}, // col -> [values] when small
+  };
+  const valueSets = new Map();
+  for (const c of cols) valueSets.set(c, new Map());
+  for (const r of sample) {
+    for (const c of cols) {
+      const v = r?.[c];
+      const isMissing = v === null || v === undefined || v === '';
+      if (isMissing) profile.nullCounts[c] = (profile.nullCounts[c] || 0) + 1;
+      // distinct/duplicate counts
+      const key = String(v);
+      const m = valueSets.get(c);
+      m.set(key, (m.get(key) || 0) + 1);
+      // numeric stats
+      if (typeof v === 'number') {
+        const st = profile.numericStats[c] || { count: 0, min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY };
+        st.count += 1; st.min = Math.min(st.min, v); st.max = Math.max(st.max, v);
+        profile.numericStats[c] = st;
+      }
+      // date stats (basic)
+      if (v && (/(date|time|at)$/i.test(c) || /T\d\d:\d\d/.test(String(v)))) {
+        const d = new Date(v);
+        if (!isNaN(d.getTime())) {
+          const st = profile.dateStats[c] || { min: null, max: null, futureCount: 0 };
+          if (!st.min || d < new Date(st.min)) st.min = d.toISOString();
+          if (!st.max || d > new Date(st.max)) st.max = d.toISOString();
+          if (d.getTime() > Date.now()) st.futureCount += 1;
+          profile.dateStats[c] = st;
+        }
+      }
+      // email invalid
+      if (/email/i.test(c)) {
+        const ok = typeof v === 'string' && /.+@.+\..+/.test(v);
+        if (!isMissing && !ok) {
+          const cur = profile.regexInvalid[c] || { pattern: 'email', invalid: 0 };
+          cur.invalid += 1; profile.regexInvalid[c] = cur;
+        }
+      }
+    }
+  }
+  for (const c of cols) {
+    const m = valueSets.get(c);
+    let dups = 0; m.forEach((cnt) => { if (cnt > 1) dups += (cnt - 1); });
+    profile.distinctCounts[c] = m.size;
+    profile.duplicateCounts[c] = dups;
+    // compute top values and optionally full distinct list when small
+    const arr = Array.from(m.entries()).map(([value, count]) => ({ value, count }));
+    arr.sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)));
+    profile.topValues[c] = arr.slice(0, 50);
+    if (m.size <= 50) profile.distinctValues[c] = arr.map((x) => x.value);
+  }
+  return profile;
 }
 
 // ---------------- AI Rule Generator ------------------------
@@ -2261,15 +2337,28 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           return;
         }
       } catch {}
-      // Try local QA first for quick, offline answers
-      const local = answerLocalQuestion(question, currentBatch);
-      if (local) {
-        setMessages((m) => m.filter((mm) => mm.id !== thinkId));
-        setMessages((m) => [...m, { role: "assistant", type: "text", content: local }]);
-        return;
+      // Skip local QA; build profiling context and route to LLM
+      let ctxRows = currentBatch?.rawRows || currentBatch?.rows || [];
+      let ctxCols = currentBatch?.rawColumns || Object.keys((currentBatch?.rows || [])[0] || {});
+      if ((!ctxRows || ctxRows.length === 0) && domainId) {
+        try {
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          if (token) {
+            const pr = await fetch(`/api/domains/${domainId}/preview?limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+            if (pr.ok) {
+              const arr = await pr.json();
+              ctxRows = Array.isArray(arr) ? arr : [];
+              ctxCols = Object.keys(ctxRows[0] || {});
+            }
+          }
+        } catch {}
       }
+      const profile = buildBatchProfile(ctxRows, ctxCols, { limit: 5000 });
       const ctx = {
         rulesets,
+        columns: ctxCols,
+        profile,
+        sampleRows: ctxRows.slice(0, 20),
         lastBatch: currentBatch
           ? {
               fileName: currentBatch.fileName,
@@ -2277,7 +2366,6 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
               totalAmount: currentBatch.totalAmount,
               issues: currentBatch.issues,
               ruleResults: currentBatch.ruleResults,
-              sampleRows: currentBatch.rows.slice(0, 20),
               columns: currentBatch.rawColumns || Object.keys((currentBatch.rows || [])[0] || {}),
             }
           : null,
