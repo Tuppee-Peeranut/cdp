@@ -702,6 +702,19 @@ router.post('/:id/ingest', async (req, res) => {
       .from('domain_versions').insert(versionPayload).select().single();
     if (verErr) return res.status(400).json({ error: verErr.message });
 
+    // Reset current snapshot: new ingest becomes the sole current data for this domain
+    {
+      const { error: delErr } = await supabaseAdmin.from('domain_data').delete().eq('domain_id', id);
+      if (delErr) return res.status(400).json({ error: `clear current failed: ${delErr.message}` });
+      // Verify cleared
+      const { count: remain, error: cntErr } = await supabaseAdmin
+        .from('domain_data')
+        .select('key_hash', { count: 'exact', head: true })
+        .eq('domain_id', id);
+      if (cntErr) return res.status(400).json({ error: `post-clear count failed: ${cntErr.message}` });
+      if ((remain || 0) > 0) return res.status(400).json({ error: `clear current failed: ${remain} rows remain` });
+    }
+
     // Compute business key safely based on available columns
     const rowKeys = Object.keys(rows[0] || {});
     let bk = Array.isArray(domain.business_key) && domain.business_key.length ? domain.business_key : [];
@@ -712,78 +725,46 @@ router.post('/:id/ingest', async (req, res) => {
     // Final fallback: per-row index ensures unique keys for this ingest if sheet has no headers
     if (!bk.length) bk = ['__row_index'];
 
-    // Upsert current data and write history on changes
-    // Also write a snapshot of the newly ingested record for this version (once per key)
-    // Additionally, ensure we never "lose" rows due to duplicate business keys:
-    // if a computed key collides within the same ingest or with existing current data,
-    // we disambiguate by appending a per-row index to the business key for this ingest.
+    // Prepare bulk inserts for current data and snapshots
     const snapshotWritten = new Set();
     const seenIngest = new Set();
+    const currentRows = [];
+    const historyRows = [];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       const record = r;
-
-      // Start with configured business key; may extend with __row_index to prevent collisions
       const baseBk = bk;
       let effBk = [...baseBk];
       let keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
       let keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
-
-      // If a previous row in this ingest used the same key, disambiguate immediately
       if (seenIngest.has(keyHash)) {
         effBk = baseBk.includes('__row_index') ? baseBk : [...baseBk, '__row_index'];
         keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
         keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
       }
-
-      // Fetch existing
-      const { data: existing, error: exErr } = await supabaseAdmin
-        .from('domain_data')
-        .select('record')
-        .eq('domain_id', id)
-        .eq('key_hash', keyHash)
-        .maybeSingle();
-      if (exErr) return res.status(400).json({ error: exErr.message });
-
-      if (existing?.record) {
-        // Collision with existing current data: never overwrite — keep every row
-        // Disambiguate key by including per-row index for this ingest
-        effBk = effBk.includes('__row_index') ? effBk : [...baseBk, '__row_index'];
-        keyValues = Object.fromEntries(effBk.map((k) => [k, k === '__row_index' ? i : (r[k] ?? null)]));
-        keyHash = sha256(effBk.map((k) => String(k === '__row_index' ? i : (r[k] ?? ''))).join('|'));
-        // Insert as a new current record
-        const { error: insErr } = await supabaseAdmin.from('domain_data').insert({
-          domain_id: id,
-          key_hash: keyHash,
-          key_values: keyValues,
-          record,
-        });
-        if (insErr) return res.status(400).json({ error: insErr.message });
-      } else {
-        const { error: insErr } = await supabaseAdmin.from('domain_data').insert({
-          domain_id: id,
-          key_hash: keyHash,
-          key_values: keyValues,
-          record,
-        });
-        if (insErr) return res.status(400).json({ error: insErr.message });
-      }
-
-      // Snapshot the newly received/current record for this version (once per key)
+      currentRows.push({ domain_id: id, key_hash: keyHash, key_values: keyValues, record });
       if (!snapshotWritten.has(keyHash)) {
-        const { error: snapErr } = await supabaseAdmin.from('domain_history').insert({
-          domain_id: id,
-          key_hash: keyHash,
-          key_values: keyValues,
-          record,
-          source_version_id: ver.id,
-        });
-        if (snapErr) return res.status(400).json({ error: snapErr.message });
+        historyRows.push({ domain_id: id, key_hash: keyHash, key_values: keyValues, record, source_version_id: ver.id });
         snapshotWritten.add(keyHash);
       }
-
-      // Track keys used in this ingest to detect intra-file duplicates
       seenIngest.add(keyHash);
+    }
+    if (currentRows.length) {
+      const { error: insErr } = await supabaseAdmin.from('domain_data').insert(currentRows);
+      if (insErr) return res.status(400).json({ error: `insert current failed: ${insErr.message}` });
+      // Optional sanity: count rows match expectation
+      const { count: curCount, error: curCntErr } = await supabaseAdmin
+        .from('domain_data')
+        .select('key_hash', { count: 'exact', head: true })
+        .eq('domain_id', id);
+      if (curCntErr) return res.status(400).json({ error: `post-insert count failed: ${curCntErr.message}` });
+      if ((curCount || 0) !== currentRows.length) {
+        return res.status(400).json({ error: `post-insert mismatch: expected ${currentRows.length} got ${curCount || 0}` });
+      }
+    }
+    if (historyRows.length) {
+      const { error: snapErr } = await supabaseAdmin.from('domain_history').insert(historyRows);
+      if (snapErr) return res.status(400).json({ error: snapErr.message });
     }
 
     // Update current_version on domain
