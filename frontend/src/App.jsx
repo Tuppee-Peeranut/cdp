@@ -414,6 +414,25 @@ function detectRuleCommand(text) {
     const m = t.match(rx);
     if (m && m[1]) return { kind: 'dedup', column: m[1].trim() };
   }
+  // Normalize casing
+  if (/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s*$/i.test(t)) {
+    return { kind: 'normalize_case', mode: 'lower' };
+  }
+  if (/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s*$/i.test(t)) {
+    return { kind: 'normalize_case', mode: 'upper' };
+  }
+  // Standardize phone numbers (column optional)
+  const phoneM = t.match(/^\s*(?:standardize|normalize)\s+phone\s+numbers?(?:\s+in\s+([A-Za-z0-9_ .-]+))?\s*$/i);
+  if (phoneM) return { kind: 'standardize_phone', column: phoneM[1]?.trim() || null };
+  // Split Full Name into First/Last
+  const splitM = t.match(/^\s*split\s+([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*(?:[,/&+]\s*|\s+and\s+)\s*([A-Za-z0-9_ .-]+)\s*$/i);
+  if (splitM) return { kind: 'split', column: splitM[1].trim(), targets: [splitM[2].trim(), splitM[3].trim()] };
+  // Merge A + B into C
+  const mergeM = t.match(/^\s*merge\s+([A-Za-z0-9_ .-]+)\s*\+\s*([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*$/i);
+  if (mergeM) return { kind: 'merge', sources: [mergeM[1].trim(), mergeM[2].trim()], target: mergeM[3].trim() };
+  // Filter out rows where Condition
+  const filterM = t.match(/^\s*filter\s+out\s+rows\s+where\s+(.+)$/i);
+  if (filterM) return { kind: 'filter', condition: filterM[1].trim() };
   return null;
 }
 
@@ -450,21 +469,80 @@ function previewForRuleCommand(descriptor, rows) {
  * Returns { name: string, definition: object }
  */
 async function generateRuleFromText(command, columns, accessToken) {
+  // Fast paths for common commands without model
+  const cols = Array.isArray(columns) ? columns : [];
+  const lowerCols = cols.map((c) => String(c).toLowerCase());
+  const resolveCol = (nameGuess, fallbackPattern) => {
+    if (nameGuess) {
+      const i = lowerCols.indexOf(String(nameGuess).toLowerCase());
+      if (i >= 0) return cols[i];
+    }
+    if (fallbackPattern) {
+      const idx = lowerCols.findIndex((c) => fallbackPattern.test(c));
+      if (idx >= 0) return cols[idx];
+    }
+    return null;
+  };
+  const t = String(command || '').trim();
+  // Dedup by X keep latest/first
+  let m = t.match(/dedup(?:e|licate)?\s+by\s+([^,]+?)(?:\s+keep\s+(first|latest|last))?$/i);
+  if (m) {
+    const col = resolveCol(m[1], null) || m[1].trim();
+    const keep = (m[2] || 'last').toLowerCase() === 'first' ? 'first' : 'last';
+    return { name: `Dedup by ${col} (${keep === 'last' ? 'latest' : 'first'})`, definition: { transforms: [], checks: [], meta: { type: 'dedup', keys: [col], keep } } };
+  }
+  // Normalize casing
+  if (/normalize\s+(?:case|casing).*lower/i.test(t)) {
+    return { name: 'Normalize casing to lower', definition: { transforms: [{ name: 'lowercase', columns: cols.length ? cols : ['*'] }], checks: [], meta: { category: 'normalization' } } };
+  }
+  if (/normalize\s+(?:case|casing).*upper/i.test(t)) {
+    return { name: 'Normalize casing to upper', definition: { transforms: [{ name: 'uppercase', columns: cols.length ? cols : ['*'] }], checks: [], meta: { category: 'normalization' } } };
+  }
+  // Standardize phone numbers
+  m = t.match(/standardize\s+phone\s+numbers?(?:\s+in\s+(.+))?/i);
+  if (m) {
+    const col = resolveCol(m[1], /(phone|mobile|tel)/i) || 'phone';
+    return { name: `Standardize phone in ${col}`, definition: { transforms: [{ name: 'standardize_phone', column: col }], checks: [], meta: { category: 'standardization' } } };
+  }
+  // Split Full Name into First/Last
+  m = t.match(/split\s+(.+?)\s+into\s+(.+?)\s*(?:[,/&+]\s*|\s+and\s+)\s*(.+)$/i);
+  if (m) {
+    const src = resolveCol(m[1], /(name|full)/i) || m[1].trim();
+    const a = m[2].trim();
+    const b = m[3].trim();
+    return { name: `Split ${src} into ${a}/${b}`, definition: { transforms: [{ name: 'split', column: src, delimiter: ' ', targets: [a, b] }], checks: [], meta: { category: 'parsing' } } };
+  }
+  // Merge A + B into C
+  m = t.match(/merge\s+(.+?)\s*\+\s*(.+?)\s+into\s+(.+)/i);
+  if (m) {
+    const a = resolveCol(m[1], null) || m[1].trim();
+    const b = resolveCol(m[2], null) || m[2].trim();
+    const target = m[3].trim();
+    return { name: `Merge ${a}+${b} into ${target}`, definition: { transforms: [{ name: 'merge', sources: [a, b], target, separator: ' ' }], checks: [], meta: { category: 'merge' } } };
+  }
+  // Filter out rows where <condition>
+  m = t.match(/filter\s+out\s+rows\s+where\s+(.+)/i);
+  if (m) {
+    const condition = m[1].trim();
+    return { name: `Filter: ${condition}`, definition: { transforms: [], checks: [{ name: 'drop_if', condition }], meta: { category: 'filter' } } };
+  }
+
+  // Model prompt for anything else (extended supported ops)
   const sys = `You convert short data quality commands into a strict JSON rule.
-Rules are stored and later executed by a simple engine that supports only:
-- transforms: trim, uppercase, lowercase, normalize_whitespace, replace{from,to}, map{column,mapping{}}, coalesce{column,values[]}
-- checks: regex{column,pattern}
-Everything else must go under meta as documentation, not executable logic.
-Return ONLY JSON. No markdown, no commentary.`;
+Rules are executed by an engine that supports:
+- transforms: trim, uppercase, lowercase, normalize_whitespace, replace{from,to,columns?}, map{column,mapping{}}, coalesce{column,values[]}, to_number{column}, strip_non_digits{column}, standardize_phone{column,countryCode?}, standardize_date{column,format?}, split{column,delimiter?|pattern?,targets[]}, merge{sources[],target,separator?}
+- checks: regex{column,pattern}, drop_if{condition}, drop_if_null{columns[]}, drop_if_zscore_gt{column,threshold}
+- meta: for dedup use { type: 'dedup', keys: [..], keep: 'first'|'last' }
+Return ONLY JSON with fields { name, definition }.`;
   const guidance = {
     columns: Array.isArray(columns) ? columns.slice(0, 60) : [],
     schema: {
       name: "string: concise rule name",
-      category: "dedup | enrichment | cross_field",
+      category: "dedup | standardization | normalization | parsing | merge | filter | enrichment | cross_field",
       definition: {
-        transforms: "optional array of supported transforms",
-        checks: "optional array of supported checks",
-        meta: "any extra details for unsupported logic like dedup keys or cross-field expressions",
+        transforms: "array of supported transforms (see list)",
+        checks: "array of supported checks (see list)",
+        meta: "extra details such as dedup keys",
       },
     },
     examples: [
@@ -481,27 +559,19 @@ Return ONLY JSON. No markdown, no commentary.`;
         }
       },
       {
-        command: "enrich bank_name from bank_code mapping (001: BBL, 002: KTB)",
+        command: "normalize casing to lowercase",
         output: {
-          name: "Enrich bank_name from bank_code",
-          category: "enrichment",
-          definition: {
-            transforms: [{ name: "map", column: "bank_code", mapping: { "001": "BBL", "002": "KTB" } }],
-            checks: [],
-            meta: { writes: [{ from: "bank_code", to: "bank_name" }] }
-          }
+          name: "Normalize to lowercase",
+          category: "normalization",
+          definition: { transforms: [{ name: "lowercase", columns: ["*"] }], checks: [], meta: {} }
         }
       },
       {
-        command: "amount must be > 0 when status is ACTIVE",
+        command: "filter out rows where Amount < 0",
         output: {
-          name: "Amount positive when ACTIVE",
-          category: "cross_field",
-          definition: {
-            transforms: [],
-            checks: [],
-            meta: { expression: "IF status == 'ACTIVE' THEN amount > 0", columns: ["status","amount"] }
-          }
+          name: "Filter: Amount < 0",
+          category: "filter",
+          definition: { transforms: [], checks: [{ name: "drop_if", condition: "Amount < 0" }], meta: {} }
         }
       }
     ]
@@ -2012,6 +2082,14 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           return;
         }
         await fetchServerTasks();
+        // Trigger server-side clean so enabled rules run and snapshot is created
+        try {
+          const cleanRes = await fetch(`/api/domains/${domainId}/clean`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+          if (cleanRes.ok) {
+            const j = await cleanRes.json();
+            setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Processed Task with rules. Changed ${j.changed} rows.` }]);
+          }
+        } catch {}
       } catch (e) {
         setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Create task error: ${e.message || e}` }]);
         return;

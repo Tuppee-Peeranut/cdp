@@ -420,6 +420,66 @@ router.post('/:id/clean', async (req, res) => {
             if (v !== undefined) out[col] = v;
           }
         }
+        // New transforms
+        if (def.name === 'to_number') {
+          const col = def.column;
+          if (col && out[col] != null) {
+            const raw = String(out[col]).replace(/[,\s]/g, '');
+            const num = Number(raw);
+            if (!Number.isNaN(num)) out[col] = num;
+          }
+        }
+        if (def.name === 'strip_non_digits') {
+          const col = def.column;
+          if (col && typeof out[col] === 'string') out[col] = out[col].replace(/\D+/g, '');
+        }
+        if (def.name === 'standardize_phone') {
+          const col = def.column;
+          if (col && out[col] != null) {
+            let digits = String(out[col]).replace(/\D+/g, '');
+            if (def.countryCode && typeof def.countryCode === 'string') {
+              const cc = def.countryCode.replace(/[^0-9+]/g, '');
+              // naive: if starts with 0 and country provided, drop leading 0 and prepend cc without '+' for digits, with '+' if keeping string
+              if (digits.startsWith('0')) digits = digits.slice(1);
+              const ccDigits = cc.replace(/\D+/g, '');
+              digits = ccDigits + digits;
+            }
+            out[col] = digits;
+          }
+        }
+        if (def.name === 'standardize_date') {
+          const col = def.column;
+          const fmt = (def.format || 'ISO').toUpperCase();
+          if (col && out[col] != null) {
+            const d = new Date(out[col]);
+            if (!isNaN(d.getTime())) {
+              out[col] = fmt === 'ISO' ? d.toISOString() : d.toISOString();
+            }
+          }
+        }
+        if (def.name === 'split') {
+          const src = def.column;
+          const targets = Array.isArray(def.targets) ? def.targets : [];
+          if (src && targets.length && typeof out[src] === 'string') {
+            let parts = [];
+            if (def.delimiter) parts = String(out[src]).split(def.delimiter);
+            else if (def.pattern) {
+              try { const rx = new RegExp(def.pattern); const m = String(out[src]).match(rx); parts = m ? m.slice(1) : []; } catch {}
+            }
+            for (let i = 0; i < targets.length; i++) {
+              out[targets[i]] = parts[i] ?? '';
+            }
+          }
+        }
+        if (def.name === 'merge') {
+          const sources = Array.isArray(def.sources) ? def.sources : [];
+          const target = def.target;
+          const sep = def.separator ?? ' ';
+          if (target && sources.length) {
+            const vals = sources.map((s) => out[s]).filter((v) => v != null && v !== '');
+            out[target] = vals.join(sep);
+          }
+        }
       }
       return out;
     };
@@ -475,6 +535,74 @@ router.post('/:id/clean', async (req, res) => {
       .single();
     if (vErr) return res.status(400).json({ error: vErr.message });
 
+    // Filter pass: drop rows matching conditions
+    const filterRules = (rules || []).filter((r) => Array.isArray(r.definition?.checks) && r.definition.checks.length);
+    const evalCondition = (row, cond) => {
+      // Very small parser: "Column OP Value" with OP in [==,!=,>,>=,<,<=]
+      // Value may be number or quoted string
+      try {
+        const m = String(cond).match(/^\s*([^<>!=]+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$/);
+        if (!m) return false;
+        const col = m[1].trim();
+        const op = m[2];
+        let rhsRaw = m[3].trim();
+        let rhs;
+        if ((rhsRaw.startsWith("'") && rhsRaw.endsWith("'")) || (rhsRaw.startsWith('"') && rhsRaw.endsWith('"'))) rhs = rhsRaw.slice(1, -1);
+        else if (!isNaN(Number(rhsRaw))) rhs = Number(rhsRaw);
+        else rhs = rhsRaw;
+        const lhs = row.record?.[col];
+        const a = typeof lhs === 'number' ? lhs : Number(lhs);
+        const b = typeof rhs === 'number' ? rhs : Number(rhs);
+        const comparable = (x) => (typeof x === 'number' && !Number.isNaN(x)) ? x : String(x ?? '');
+        const A = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(a) ? lhs : a) : comparable(lhs);
+        const B = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(b) ? rhs : b) : comparable(rhs);
+        switch (op) {
+          case '==': return A == B;
+          case '!=': return A != B;
+          case '>': return A > B;
+          case '>=': return A >= B;
+          case '<': return A < B;
+          case '<=': return A <= B;
+          default: return false;
+        }
+      } catch { return false; }
+    };
+    // Outlier helper: z-score threshold
+    const zscoreFilter = (col, threshold) => {
+      const vals = (rows || []).map(r => Number(r.record?.[col])).filter(v => typeof v === 'number' && !Number.isNaN(v));
+      if (!vals.length) return new Set();
+      const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
+      const variance = vals.reduce((a,b)=>a+(b-mean)*(b-mean),0)/vals.length;
+      const std = Math.sqrt(variance) || 1;
+      const bad = new Set();
+      for (const r of rows || []) {
+        const v = Number(r.record?.[col]);
+        if (typeof v === 'number' && !Number.isNaN(v)) {
+          const z = Math.abs((v - mean) / std);
+          if (z > threshold) bad.add(r.key_hash);
+        }
+      }
+      return bad;
+    };
+    const filterDeletes = new Set();
+    for (const r of filterRules) {
+      for (const chk of r.definition.checks || []) {
+        if (chk.name === 'drop_if' && chk.condition) {
+          for (const row of rows || []) if (evalCondition(row, chk.condition)) filterDeletes.add(row.key_hash);
+        }
+        if (chk.name === 'drop_if_null' && Array.isArray(chk.columns)) {
+          for (const row of rows || []) {
+            if (chk.columns.some((c) => row.record?.[c] == null || row.record[c] === '')) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'drop_if_zscore_gt' && chk.column) {
+          const thr = Number(chk.threshold || 3);
+          const bad = zscoreFilter(chk.column, thr > 0 ? thr : 3);
+          for (const k of bad) filterDeletes.add(k);
+        }
+      }
+    }
+
     // Dedup pass: remove duplicates based on rules with meta.type/category "dedup"
     const dedupRules = (rules || []).filter((r) => {
       const meta = r.definition?.meta || {};
@@ -488,7 +616,7 @@ router.post('/:id/clean', async (req, res) => {
     const resolveCol = (name) => lowerToActual.get(String(name || '').toLowerCase()) || name;
 
     // Build a set of key_hashes to delete and per-rule metrics
-    const toDelete = new Set();
+    const toDelete = new Set(filterDeletes);
     const dedupRemovedByRule = new Map();
 
     if (dedupRules.length && Array.isArray(rows) && rows.length) {
