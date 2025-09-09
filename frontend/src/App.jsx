@@ -443,12 +443,52 @@ function detectRuleCommand(text) {
 function previewForRuleCommand(descriptor, rows) {
   if (!descriptor || !Array.isArray(rows)) return { columns: [], rows: [] };
   const sampleRows = rows.slice(0, 1000); // cap for speed
+  const baseCols = Object.keys(sampleRows[0] || {});
+  const byLower = new Map(baseCols.map((c) => [String(c).toLowerCase(), c]));
+
+  // Helpers
+  const clone = (r) => JSON.parse(JSON.stringify(r));
+  const ensureCols = (cols, added) => Array.from(new Set([...(cols || []), ...(added || [])]));
+  const applyNormalize = (r, mode) => {
+    const out = clone(r);
+    for (const k of Object.keys(out)) {
+      if (typeof out[k] === 'string') out[k] = mode === 'upper' ? out[k].toUpperCase() : out[k].toLowerCase();
+    }
+    return out;
+  };
+  const standardizePhone = (val) => String(val ?? '').replace(/\D+/g, '');
+  const evalCondition = (row, cond) => {
+    try {
+      const m = String(cond).match(/^\s*([^<>!=]+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$/);
+      if (!m) return false;
+      const col = (byLower.get(m[1].trim().toLowerCase()) || m[1]).trim();
+      const op = m[2];
+      let rhsRaw = m[3].trim();
+      let rhs;
+      if ((rhsRaw.startsWith('\"') && rhsRaw.endsWith('\"')) || (rhsRaw.startsWith("'") && rhsRaw.endsWith("'"))) rhs = rhsRaw.slice(1, -1);
+      else if (!isNaN(Number(rhsRaw))) rhs = Number(rhsRaw);
+      else rhs = rhsRaw;
+      const lhs = row[col];
+      const a = typeof lhs === 'number' ? lhs : Number(lhs);
+      const b = typeof rhs === 'number' ? rhs : Number(rhs);
+      const comparable = (x) => (typeof x === 'number' && !Number.isNaN(x)) ? x : String(x ?? '');
+      const A = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(a) ? lhs : a) : comparable(lhs);
+      const B = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(b) ? rhs : b) : comparable(rhs);
+      switch (op) {
+        case '==': return A == B;
+        case '!=': return A != B;
+        case '>': return A > B;
+        case '>=': return A >= B;
+        case '<': return A < B;
+        case '<=': return A <= B;
+        default: return false;
+      }
+    } catch { return false; }
+  };
+
+  // Dedup preview
   if (descriptor.kind === 'dedup' && descriptor.column) {
-    const colLower = descriptor.column.toLowerCase();
-    // Resolve actual column case from first row keys
-    const cols = Object.keys(sampleRows[0] || {});
-    const byLower = new Map(cols.map((c) => [String(c).toLowerCase(), c]));
-    const resolved = byLower.get(colLower) || descriptor.column;
+    const resolved = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
     const seen = new Set();
     const out = [];
     for (const r of sampleRows) {
@@ -458,9 +498,64 @@ function previewForRuleCommand(descriptor, rows) {
       out.push(r);
       if (out.length >= 20) break;
     }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Normalize casing preview
+  if (descriptor.kind === 'normalize_case') {
+    const mode = descriptor.mode === 'upper' ? 'upper' : 'lower';
+    const out = sampleRows.slice(0, 20).map((r) => applyNormalize(r, mode));
+    return { columns: baseCols, rows: out };
+  }
+
+  // Standardize phone numbers preview
+  if (descriptor.kind === 'standardize_phone') {
+    const phoneColGuess = descriptor.column ? (byLower.get(descriptor.column.toLowerCase()) || descriptor.column) : (byLower.get('phone') || byLower.get('mobile') || byLower.get('tel'));
+    const col = phoneColGuess || baseCols.find((c) => /phone|mobile|tel/i.test(c)) || baseCols[0];
+    const out = sampleRows.slice(0, 20).map((r) => { const x = clone(r); x[col] = standardizePhone(x[col]); return x; });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Split column into targets preview
+  if (descriptor.kind === 'split' && descriptor.column && Array.isArray(descriptor.targets)) {
+    const src = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const targets = descriptor.targets;
+    const cols = ensureCols(baseCols, targets);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const text = String(x[src] ?? '');
+      const parts = text.split(/\s+/);
+      for (let i = 0; i < targets.length; i++) x[targets[i]] = parts[i] ?? '';
+      return x;
+    });
     return { columns: cols, rows: out };
   }
-  return { columns: Object.keys(sampleRows[0] || {}), rows: sampleRows.slice(0, 20) };
+
+  // Merge sources into target preview
+  if (descriptor.kind === 'merge' && Array.isArray(descriptor.sources) && descriptor.target) {
+    const sources = descriptor.sources.map((s) => byLower.get(String(s).toLowerCase()) || s);
+    const target = descriptor.target;
+    const cols = ensureCols(baseCols, [target]);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const vals = sources.map((s) => x[s]).filter((v) => v != null && v !== '');
+      x[target] = vals.join(' ');
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
+
+  // Filter rows preview
+  if (descriptor.kind === 'filter' && descriptor.condition) {
+    const out = [];
+    for (const r of sampleRows) {
+      if (!evalCondition(r, descriptor.condition)) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  return { columns: baseCols, rows: sampleRows.slice(0, 20) };
 }
 
 // ---------------- AI Rule Generator ------------------------
