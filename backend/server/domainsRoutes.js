@@ -496,15 +496,7 @@ router.post('/:id/clean', async (req, res) => {
         let removed = 0;
         for (const { others } of groups.values()) {
           for (const dup of others) {
-            // record history of removal
-            await supabaseAdmin.from('domain_history').insert({
-              domain_id: id,
-              key_hash: dup.key_hash,
-              key_values: dup.key_values,
-              record: dup.record,
-              source_version_id: verOut.id,
-            });
-            // delete from current
+            // delete from current (do not write removed rows to history; latest version should contain only the kept rows)
             await supabaseAdmin
               .from('domain_data')
               .delete()
@@ -527,15 +519,7 @@ router.post('/:id/clean', async (req, res) => {
       const newRec = applyTransforms(row.record, transforms);
       if (JSON.stringify(newRec) !== JSON.stringify(row.record)) {
         changed++;
-        // write history
-        await supabaseAdmin.from('domain_history').insert({
-          domain_id: id,
-          key_hash: row.key_hash,
-          key_values: row.key_values,
-          record: row.record,
-          source_version_id: verOut.id,
-        });
-        // update current
+        // update current in place
         await supabaseAdmin
           .from('domain_data')
           .update({ record: newRec, updated_at: new Date().toISOString() })
@@ -595,12 +579,46 @@ router.post('/:id/clean', async (req, res) => {
     }));
     if (inserts.length) await supabaseAdmin.from('rule_runs').insert(inserts);
 
-    // Update output version's rows_count to reflect post-dedup row count
-    const finalRowsCount = (rows?.length || 0) - toDelete.size;
+    // Snapshot final current rows as the latest version in domain_history
+    // Fetch remaining current rows and insert as the snapshot for verOut
+    let offset = 0; const pageSize = 1000; let totalSnap = 0;
+    while (true) {
+      const { data: curPage, error: curErr } = await supabaseAdmin
+        .from('domain_data')
+        .select('key_hash, key_values, record')
+        .eq('domain_id', id)
+        .range(offset, offset + pageSize - 1);
+      if (curErr) return res.status(400).json({ error: curErr.message });
+      if (!curPage || curPage.length === 0) break;
+      const batch = curPage.map((r) => ({ domain_id: id, key_hash: r.key_hash, key_values: r.key_values, record: r.record, source_version_id: verOut.id }));
+      const { error: snapErr } = await supabaseAdmin.from('domain_history').insert(batch);
+      if (snapErr) return res.status(400).json({ error: snapErr.message });
+      totalSnap += batch.length;
+      if (curPage.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    // Verify snapshot size equals current rows
+    const { count: curCountAfter, error: curCntAfterErr } = await supabaseAdmin
+      .from('domain_data')
+      .select('key_hash', { count: 'exact', head: true })
+      .eq('domain_id', id);
+    if (curCntAfterErr) return res.status(400).json({ error: `final current count failed: ${curCntAfterErr.message}` });
+    if ((curCountAfter || 0) !== totalSnap) {
+      return res.status(400).json({ error: `snapshot mismatch: current=${curCountAfter || 0} history=${totalSnap}` });
+    }
+
+    // Update output version's rows_count to reflect post-dedup row count (from snapshot)
     await supabaseAdmin
       .from('domain_versions')
-      .update({ rows_count: finalRowsCount })
+      .update({ rows_count: totalSnap })
       .eq('id', verOut.id);
+
+    // Mark this cleaned version as current for the domain
+    await supabaseAdmin
+      .from('domains')
+      .update({ current_version_id: verOut.id, updated_at: new Date().toISOString() })
+      .eq('id', id);
 
     await auditLog({ actorId: userId, tenantId, action: 'update', resource: 'domain', resourceId: id, meta: { clean_changed: changed } });
     res.json({ ok: true, changed, version: verOut });
