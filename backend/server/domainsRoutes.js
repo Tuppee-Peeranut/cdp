@@ -430,19 +430,47 @@ router.post('/:id/clean', async (req, res) => {
       if (r.definition?.transforms) transforms.push(...r.definition.transforms);
     }
 
-    // Find latest input version (if any) to link as domain_version_id in rule_runs
+    // Find latest version for linkage and metadata
     const { data: latestVer } = await supabaseAdmin
       .from('domain_versions')
-      .select('id')
+      .select('id, file_path, columns, import_summary')
       .eq('domain_id', id)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
+    // Fallback: latest ingest that has a file_path/columns
+    let latestIngest = null;
+    if (!latestVer?.file_path || !latestVer?.columns || latestVer.columns?.length === 0) {
+      const { data: li } = await supabaseAdmin
+        .from('domain_versions')
+        .select('id, file_path, columns')
+        .eq('domain_id', id)
+        .not('file_path', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      latestIngest = li || null;
+    }
 
-    // Create output version record
+    // Create output version record (inherit file_path/columns from latest where possible)
+    const cleanSummary = { action: 'clean' };
+    if (latestVer?.id) cleanSummary.source_version_id = latestVer.id;
+    const derivedColumns = (() => {
+      try { return Object.keys((rows?.[0]?.record) || {}); } catch { return []; }
+    })();
+    const finalFilePath = latestVer?.file_path || latestIngest?.file_path || null;
+    const finalColumns = (latestVer?.columns && latestVer.columns.length ? latestVer.columns
+                         : latestIngest?.columns && latestIngest.columns.length ? latestIngest.columns
+                         : derivedColumns);
     const { data: verOut, error: vErr } = await supabaseAdmin
       .from('domain_versions')
-      .insert({ domain_id: id, file_path: null, rows_count: rows?.length || 0, columns: null, import_summary: { action: 'clean' } })
+      .insert({
+        domain_id: id,
+        file_path: finalFilePath,
+        rows_count: rows?.length || 0,
+        columns: finalColumns,
+        import_summary: cleanSummary,
+      })
       .select()
       .single();
     if (vErr) return res.status(400).json({ error: vErr.message });
