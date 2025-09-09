@@ -2016,6 +2016,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     ];
   });
   const [currentPrompt, setCurrentPrompt] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
@@ -2287,19 +2288,23 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
 
   const ask = async () => {
     if (!currentPrompt.trim()) return;
-    const question = currentPrompt.trim();
+    let inputText = currentPrompt.trim();
+    let forcedMode = null; // 'rule' | 'ask' | null
+    if (/^\/rule\b/i.test(inputText)) { forcedMode = 'rule'; inputText = inputText.replace(/^\/rule\b\s*/i, ''); }
+    else if (/^\/ask\b/i.test(inputText)) { forcedMode = 'ask'; inputText = inputText.replace(/^\/ask\b\s*/i, ''); }
+    const question = inputText;
     setCurrentPrompt("");
-    setMessages((m) => [...m, { role: "user", type: "text", content: question }]);
+    setMessages((m) => [...m, { role: "user", type: "text", content: (forcedMode ? `/${forcedMode} ` : '') + question }]);
 
     try {
       setBusy(true);
       const thinkId = uid("thinking");
       setPendingId(thinkId);
       setMessages((m) => [...m, { role: 'assistant', type: 'thinking', id: thinkId }]);
-      // Try inline rule command (e.g., "Dedup by <Column>")
+      // Try rule command (forced via /rule or auto-detected)
       try {
-        const cmd = detectRuleCommand(question);
-        if (cmd) {
+        const cmd = forcedMode === 'ask' ? null : detectRuleCommand(question);
+        if (forcedMode === 'rule' || cmd) {
           const token = (await supabase.auth.getSession()).data?.session?.access_token;
           let cols = currentBatch?.rawColumns || Object.keys((currentBatch?.rows || [])[0] || {});
           if ((!cols || cols.length === 0) && domainId && token) {
@@ -2331,7 +2336,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             } catch {}
           }
           if (previewRowsSrc && previewRowsSrc.length) {
-            const pv = previewForRuleCommand(cmd, previewRowsSrc);
+          const desc = cmd || detectRuleCommand(question) || null;
+          const pv = desc ? previewForRuleCommand(desc, previewRowsSrc) : { columns: Object.keys(previewRowsSrc[0] || {}), rows: previewRowsSrc.slice(0, 20) };
             setMessages((m) => [...m, { role: 'assistant', type: 'preview', content: 'Preview', payload: pv }]);
           }
           return;
@@ -2512,11 +2518,68 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           <div className="relative">
             <textarea
               className="w-full bg-neutral-100 border border-neutral-300 rounded-xl text-lg resize-none h-28 px-3 pt-2 pb-14 pr-20 pl-10"
-              placeholder="Ask about the data, rules, or validation results..."
+              placeholder="Type /ask to analyze or /rule to create a rule…"
               value={currentPrompt}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } }}
-              onChange={(e) => setCurrentPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                const showSlash = /^\/[a-z]*$/i.test(currentPrompt);
+                if (showSlash) {
+                  // Slash menu navigation
+                  const base = [
+                    { key: '/ask' },
+                    { key: '/rule' },
+                  ];
+                  const q = currentPrompt.slice(1).toLowerCase();
+                  const items = base.filter((it) => it.key.slice(1).startsWith(q));
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((i) => Math.min(i + 1, Math.max(items.length - 1, 0))); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((i) => Math.max(i - 1, 0)); return; }
+                  // Space should accept current token and close suggestions
+                  if (e.key === ' ') {
+                    // Let space insert; onChange will make pattern not match so suggestions close
+                    return;
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    // If only slash or partial, accept selected suggestion; else submit as normal
+                    const onlySlash = /^\/(?:a|ask|r|rule)?$/i.test(currentPrompt.trim());
+                    if (onlySlash) {
+                      e.preventDefault();
+                      const pick = items[Math.min(slashIndex, Math.max(items.length - 1, 0))] || items[0] || base[0];
+                      setCurrentPrompt(pick.key + ' ');
+                      setSlashIndex(0);
+                      return;
+                    }
+                  }
+                }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+              }}
+              onChange={(e) => { setCurrentPrompt(e.target.value); if (!e.target.value.startsWith('/')) setSlashIndex(0); }}
             />
+            {/* Slash suggestions */}
+            {/^\/[a-z]*$/i.test(currentPrompt) && (
+              <div className="absolute left-3 bottom-[8.25rem] w-64 bg-white border border-neutral-300 rounded-lg shadow z-10">
+                {(() => {
+                  const base = [
+                    { key: '/ask' },
+                    { key: '/rule' },
+                  ];
+                  const q = currentPrompt.slice(1).toLowerCase();
+                  const items = base.filter((it) => it.key.slice(1).startsWith(q));
+                  const list = items.length ? items : base;
+                  return (
+                    <ul className="py-1">
+                      {list.map((it, idx) => (
+                        <li
+                          key={it.key}
+                          onMouseDown={(e) => { e.preventDefault(); setCurrentPrompt(it.key + ' '); setSlashIndex(0); }}
+                          className={`px-3 py-2 text-sm cursor-pointer ${idx === Math.min(slashIndex, list.length - 1) ? 'bg-neutral-100' : ''}`}
+                        >
+                          <span className="font-mono text-neutral-700">{it.key}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+              </div>
+            )}
             <div className="absolute left-2 bottom-2">
               <label>
                 <input
