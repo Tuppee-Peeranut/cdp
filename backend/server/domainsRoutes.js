@@ -92,7 +92,7 @@ router.post('/:id/rules', async (req, res) => {
   if (!name || !definition) return res.status(400).json({ error: 'name and definition required' });
   const { data: dom } = await supabaseAdmin.from('domains').select('tenant_id').eq('id', id).single();
   if (!dom || dom.tenant_id !== tenantId) return res.status(403).json({ error: 'Forbidden' });
-  const insert = { domain_id: id, name, definition, created_by: userId };
+  const insert = { domain_id: id, name, definition: normalizeRuleDefinition(definition), created_by: userId };
   const { data, error } = await supabaseAdmin.from('rules').insert(insert).select().single();
   if (error) return res.status(400).json({ error: error.message });
   await auditLog({ actorId: userId, tenantId, action: 'create', resource: 'rule', resourceId: data.id, meta: insert });
@@ -109,7 +109,7 @@ router.put('/:id/rules/:ruleId', async (req, res) => {
   const { name, status, definition } = req.body || {};
   if (name !== undefined) patch.name = name;
   if (status !== undefined) patch.status = status;
-  if (definition !== undefined) patch.definition = definition;
+  if (definition !== undefined) patch.definition = normalizeRuleDefinition(definition);
   const { data, error } = await supabaseAdmin.from('rules').update(patch).eq('id', ruleId).eq('domain_id', id).select().single();
   if (error) return res.status(400).json({ error: error.message });
   res.json(data);
@@ -254,7 +254,7 @@ router.post('/:id/clean', async (req, res) => {
     // Fetch current data
     const { data: rows } = await supabaseAdmin
       .from('domain_data')
-      .select('key_hash, key_values, record')
+      .select('key_hash, key_values, record, updated_at')
       .eq('domain_id', id)
       .limit(20000);
 
@@ -308,6 +308,15 @@ router.post('/:id/clean', async (req, res) => {
       if (r.definition?.transforms) transforms.push(...r.definition.transforms);
     }
 
+    // Find latest input version (if any) to link as domain_version_id in rule_runs
+    const { data: latestVer } = await supabaseAdmin
+      .from('domain_versions')
+      .select('id')
+      .eq('domain_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     // Create output version record
     const { data: verOut, error: vErr } = await supabaseAdmin
       .from('domain_versions')
@@ -316,7 +325,83 @@ router.post('/:id/clean', async (req, res) => {
       .single();
     if (vErr) return res.status(400).json({ error: vErr.message });
 
+    // Dedup pass: remove duplicates based on rules with meta.type/category "dedup"
+    const dedupRules = (rules || []).filter((r) => {
+      const meta = r.definition?.meta || {};
+      const t = (meta.type || meta.category || '').toString().toLowerCase();
+      return t === 'dedup' && Array.isArray(meta.keys) && meta.keys.length > 0;
+    });
+
+    // Helper: resolve column name case-insensitively
+    const sampleCols = Object.keys((rows?.[0]?.record) || {});
+    const lowerToActual = new Map(sampleCols.map((c) => [String(c).toLowerCase(), c]));
+    const resolveCol = (name) => lowerToActual.get(String(name || '').toLowerCase()) || name;
+
+    // Build a set of key_hashes to delete and per-rule metrics
+    const toDelete = new Set();
+    const dedupRemovedByRule = new Map();
+
+    if (dedupRules.length && Array.isArray(rows) && rows.length) {
+      for (const r of dedupRules) {
+        const meta = r.definition?.meta || {};
+        const keep = (meta.keep || 'last').toString().toLowerCase(); // 'first' | 'last'
+        const keys = (meta.keys || []).map((k) => resolveCol(k));
+        // group by computed key
+        const groups = new Map(); // key -> { keepRow, others[] }
+        for (const row of rows) {
+          // skip if already marked for deletion by a previous dedup rule
+          if (toDelete.has(row.key_hash)) continue;
+          const parts = keys.map((k) => String(row.record?.[k] ?? '').trim().toLowerCase());
+          const hasAny = parts.some((p) => p.length > 0);
+          if (!hasAny) continue;
+          const gk = parts.join('|');
+          const cur = groups.get(gk);
+          if (!cur) {
+            groups.set(gk, { keepRow: row, others: [] });
+          } else {
+            // choose keeper by updated_at
+            const a = new Date(cur.keepRow?.updated_at || 0).getTime();
+            const b = new Date(row?.updated_at || 0).getTime();
+            if (keep === 'first') {
+              // older wins
+              if (b < a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
+            } else {
+              // last: newer wins
+              if (b > a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
+            }
+          }
+        }
+        let removed = 0;
+        for (const { others } of groups.values()) {
+          for (const dup of others) {
+            // record history of removal
+            await supabaseAdmin.from('domain_history').insert({
+              domain_id: id,
+              key_hash: dup.key_hash,
+              key_values: dup.key_values,
+              record: dup.record,
+              source_version_id: verOut.id,
+            });
+            // delete from current
+            await supabaseAdmin
+              .from('domain_data')
+              .delete()
+              .eq('domain_id', id)
+              .eq('key_hash', dup.key_hash);
+            toDelete.add(dup.key_hash);
+            removed++;
+          }
+        }
+        if (removed) {
+          dedupRemovedByRule.set(r.id, removed);
+          changed += removed;
+        }
+      }
+    }
+
+    // Apply transforms only to rows that remain after dedup
     for (const row of rows || []) {
+      if (toDelete.has(row.key_hash)) continue;
       const newRec = applyTransforms(row.record, transforms);
       if (JSON.stringify(newRec) !== JSON.stringify(row.record)) {
         changed++;
@@ -337,30 +422,63 @@ router.post('/:id/clean', async (req, res) => {
       }
     }
 
-    // Compute simple validation metrics if provided in rules
+    // Compute metrics overall and per rule
     const metrics = { changed_rows: changed, rule_count: rules?.length || 0 };
-    let regexFails = 0;
+    const perRuleMetrics = new Map();
+    // Precompute per-rule changed row estimates and regex fails
     for (const r of rules || []) {
-      const checks = r.definition?.checks || [];
-      for (const chk of checks) {
-        if (chk.name === 'regex' && chk.column && chk.pattern) {
-          const re = new RegExp(chk.pattern);
-          for (const row of rows || []) if (!re.test(String(row.record[chk.column] ?? ''))) regexFails++;
+      const base = { dedup_removed: dedupRemovedByRule.get(r.id) || 0 };
+      let changedRowsEstimate = 0;
+      const rTransforms = Array.isArray(r.definition?.transforms) ? r.definition.transforms : [];
+      if (rTransforms.length) {
+        for (const row of rows || []) {
+          if (toDelete.has(row.key_hash)) continue;
+          const newRec = applyTransforms(row.record, rTransforms);
+          if (JSON.stringify(newRec) !== JSON.stringify(row.record)) changedRowsEstimate++;
         }
       }
+      let regexFails = 0;
+      const checks = Array.isArray(r.definition?.checks) ? r.definition.checks : [];
+      for (const chk of checks) {
+        if (chk?.name === 'regex' && chk.column && chk.pattern) {
+          const re = new RegExp(chk.pattern);
+          for (const row of rows || []) if (!toDelete.has(row.key_hash) && !re.test(String(row.record?.[chk.column] ?? ''))) regexFails++;
+        }
+      }
+      perRuleMetrics.set(r.id, {
+        ...base,
+        changed_rows_estimate: changedRowsEstimate,
+        regex_fails: regexFails || undefined,
+        transform_count: rTransforms.length || 0,
+        check_count: checks.length || 0,
+      });
     }
-    if (regexFails) metrics.regex_fails = regexFails;
+    // Aggregate regex fails overall
+    const totalRegexFails = Array.from(perRuleMetrics.values()).reduce((acc, m) => acc + (m.regex_fails || 0), 0);
+    if (totalRegexFails) metrics.regex_fails = totalRegexFails;
+    const totalDedupRemoved = Array.from(perRuleMetrics.values()).reduce((acc, m) => acc + (m.dedup_removed || 0), 0);
+    if (totalDedupRemoved) metrics.dedup_removed = totalDedupRemoved;
 
-    // Create rule_run summary
-    await supabaseAdmin.from('rule_runs').insert({
-      rule_id: null,
-      domain_version_id: null,
+    // Create a rule_run row per rule to link outputs properly
+    const startedAt = new Date().toISOString();
+    const finishedAt = new Date().toISOString();
+    const inserts = (rules || []).map((r) => ({
+      rule_id: r.id,
+      domain_version_id: latestVer?.id || null,
       status: 'completed',
-      metrics,
+      metrics: perRuleMetrics.get(r.id) || {},
       output_version_id: verOut.id,
-      started_at: new Date().toISOString(),
-      finished_at: new Date().toISOString(),
-    });
+      started_at: startedAt,
+      finished_at: finishedAt,
+    }));
+    if (inserts.length) await supabaseAdmin.from('rule_runs').insert(inserts);
+
+    // Update output version's rows_count to reflect post-dedup row count
+    const finalRowsCount = (rows?.length || 0) - toDelete.size;
+    await supabaseAdmin
+      .from('domain_versions')
+      .update({ rows_count: finalRowsCount })
+      .eq('id', verOut.id);
 
     await auditLog({ actorId: userId, tenantId, action: 'update', resource: 'domain', resourceId: id, meta: { clean_changed: changed } });
     res.json({ ok: true, changed, version: verOut });
@@ -394,6 +512,20 @@ async function resolveTenantId(req) {
   } catch {
     return null;
   }
+}
+
+// Ensure rule.definition has actionable arrays and preserves meta
+function normalizeRuleDefinition(def = {}) {
+  const out = { transforms: [], checks: [], meta: {} };
+  if (Array.isArray(def.transforms)) out.transforms = def.transforms;
+  if (Array.isArray(def.checks)) out.checks = def.checks;
+  // Carry-over meta and also fold any stray fields into meta for clarity
+  const meta = { ...(def.meta || {}) };
+  for (const k of Object.keys(def || {})) {
+    if (!['transforms', 'checks', 'meta'].includes(k)) meta[k] = meta[k] ?? def[k];
+  }
+  out.meta = meta;
+  return out;
 }
 
 // Ingest a file from Storage into domain_versions + domain_data/history

@@ -1529,6 +1529,7 @@ function VersionsPanel({ domainId, onClose }) {
     const res = await fetch(`/api/domains/${domainId}/preview?limit=50`, { headers: { Authorization: `Bearer ${token}` } });
     if (res.ok) setPreview(await res.json());
   };
+  
   const columns = preview && preview.length ? Object.keys(preview[0]) : [];
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
