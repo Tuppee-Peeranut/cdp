@@ -890,7 +890,7 @@ function DomainEditor({ domain, onClose, onSaved, accessToken }) {
   );
 }
 
-function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
+function MessageBubble({ msg, rulesets, setRulesets, kind, domain, onApproveRule, onRejectRule }) {
   const isUser = msg.role === "user";
   const bubbleCls = isUser
     ? "bg-neutral-200 text-neutral-900"
@@ -919,6 +919,15 @@ function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
             setRulesets={setRulesets}
             domain={domain}
           />
+        )}
+        {msg.type === "rule_proposal" && msg.payload && (
+          <div>
+            <div className="text-sm font-medium mb-2">Save this rule?</div>
+            <div className="flex gap-2">
+              <button className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs" onClick={() => onApproveRule?.(msg)}>Approve</button>
+              <button className="px-3 py-1.5 rounded bg-neutral-300 text-neutral-800 text-xs" onClick={() => onRejectRule?.(msg)}>Reject</button>
+            </div>
+          </div>
         )}
         {msg.type === "preview" && msg.payload && (
           <PreviewTable payload={msg.payload} />
@@ -2254,13 +2263,9 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           return;
         }
         await fetchServerTasks();
-        // Trigger server-side clean so enabled rules run and snapshot is created
+        // Trigger server-side clean so enabled rules run and snapshot is created (no chat message)
         try {
-          const cleanRes = await fetch(`/api/domains/${domainId}/clean`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-          if (cleanRes.ok) {
-            const j = await cleanRes.json();
-            setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Processed Task with rules. Changed ${j.changed} rows.` }]);
-          }
+          await fetch(`/api/domains/${domainId}/clean`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
         } catch {}
       } catch (e) {
         setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Create task error: ${e.message || e}` }]);
@@ -2279,10 +2284,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       };
       setTasks((t) => [task, ...t]);
     }
-    setMessages((m) => [
-      ...m,
-      { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} records.` },
-    ]);
+    // no chat message for task initiation
     addToast("Task initiated");
   };
 
@@ -2317,7 +2319,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             } catch {}
           }
           const out = await generateRuleFromText(question, cols || [], token);
-          if (domainId && token) {
+          if (forcedMode !== 'rule' && domainId && token) {
             const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: out.name, definition: out.definition }) });
             if (!res.ok) throw new Error((await res.json()).error || 'Create rule failed');
             setServerRuleCount((c) => (c == null ? 1 : c + 1));
@@ -2339,6 +2341,13 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           const desc = cmd || detectRuleCommand(question) || null;
           const pv = desc ? previewForRuleCommand(desc, previewRowsSrc) : { columns: Object.keys(previewRowsSrc[0] || {}), rows: previewRowsSrc.slice(0, 20) };
             setMessages((m) => [...m, { role: 'assistant', type: 'preview', content: 'Preview', payload: pv }]);
+          }
+          if (forcedMode === 'rule') {
+            const proposalId = uid('rule');
+            setMessages((m) => [
+              ...m,
+              { role: 'assistant', type: 'rule_proposal', id: proposalId, payload: { name: out.name, definition: out.definition } },
+            ]);
           }
           return;
         }
@@ -2438,6 +2447,29 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     }
   };
 
+  // Rule proposal handlers
+  const approveRuleProposal = async (proposalMsg) => {
+    try {
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!domainId || !token) {
+        setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'No active server domain to save this rule.' }]);
+        return;
+      }
+      const body = { name: proposalMsg?.payload?.name, definition: proposalMsg?.payload?.definition };
+      const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.json()).error || 'Create rule failed');
+      setServerRuleCount((c) => (c == null ? 1 : c + 1));
+      setMessages((m) => m.filter((mm) => mm !== proposalMsg));
+      setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Rule "${body.name}" saved.` }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Save rule failed: ${e.message || e}` }]);
+    }
+  };
+  const rejectRuleProposal = (proposalMsg) => {
+    setMessages((m) => m.filter((mm) => mm !== proposalMsg));
+    setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'Rule discarded.' }]);
+  };
+
   return (
     <>
     <div className={`grid grid-cols-1 ${showTasks ? "lg:grid-cols-3" : "lg:grid-cols-1"} gap-0`}>
@@ -2508,6 +2540,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
               setRulesets={setRulesets}
               kind={kind}
               domain={domain}
+              onApproveRule={approveRuleProposal}
+              onRejectRule={rejectRuleProposal}
             />
           ))}
           <div className="text-center text-xs text-neutral-600 pt-6">Drop an Excel/CSV anywhere above to import</div>
