@@ -380,9 +380,13 @@ router.post('/:id/clean', async (req, res) => {
       .eq('domain_id', id)
       .limit(20000);
 
-    // Apply very simple transforms
+    // Apply transforms (standardization, type conversion, structural per-row)
     const applyTransforms = (rec, defs = []) => {
       let out = { ...rec };
+      const toTitleCase = (s) => String(s)
+        .toLowerCase()
+        .replace(/\b([a-z])(\w*)/g, (_, a, b) => a.toUpperCase() + b);
+      const normalizeNullTokens = new Set(['', 'null', 'n/a', 'na', 'none', '-', 'n\u00a0/a']);
       for (const def of defs) {
         if (def.name === 'trim') {
           const cols = def.columns || Object.keys(out);
@@ -395,6 +399,10 @@ router.post('/:id/clean', async (req, res) => {
         if (def.name === 'uppercase') {
           const cols = def.columns || Object.keys(out);
           for (const c of cols) if (typeof out[c] === 'string') out[c] = out[c].toUpperCase();
+        }
+        if (def.name === 'titlecase') {
+          const cols = def.columns || Object.keys(out);
+          for (const c of cols) if (typeof out[c] === 'string') out[c] = toTitleCase(out[c]);
         }
         if (def.name === 'normalize_whitespace') {
           const cols = def.columns || Object.keys(out);
@@ -412,12 +420,38 @@ router.post('/:id/clean', async (req, res) => {
           const mapping = def.mapping || {};
           if (col && out[col] != null && mapping[out[col]] !== undefined) out[col] = mapping[out[col]];
         }
+        if (def.name === 'categorical_map') {
+          const col = def.column;
+          const mapping = def.mapping || {};
+          if (col && out[col] != null && mapping[out[col]] !== undefined) out[col] = mapping[out[col]];
+        }
         if (def.name === 'coalesce') {
           const col = def.column;
           const values = def.values || [];
           if (col && (out[col] == null || out[col] === '')) {
             const v = values.find((x) => x != null && x !== '');
             if (v !== undefined) out[col] = v;
+          }
+        }
+        if (def.name === 'fill_missing') {
+          // def.columns + def.value OR def.defaults { col: value }
+          const defaults = def.defaults || {};
+          if (Array.isArray(def.columns) && def.value !== undefined) {
+            for (const c of def.columns) if (out[c] == null || out[c] === '') out[c] = def.value;
+          }
+          for (const [k, v] of Object.entries(defaults)) if (out[k] == null || out[k] === '') out[k] = v;
+        }
+        if (def.name === 'normalize_nulls') {
+          const cols = def.columns || Object.keys(out);
+          const tokens = Array.isArray(def.tokens) && def.tokens.length ? def.tokens : Array.from(normalizeNullTokens);
+          const tokenSet = new Set(tokens.map((t) => String(t).toLowerCase()));
+          for (const c of cols) {
+            const v = out[c];
+            if (v == null) continue;
+            if (typeof v === 'string') {
+              const s = v.trim();
+              if (tokenSet.has(s.toLowerCase())) out[c] = null;
+            }
           }
         }
         // New transforms
@@ -427,6 +461,26 @@ router.post('/:id/clean', async (req, res) => {
             const raw = String(out[col]).replace(/[,\s]/g, '');
             const num = Number(raw);
             if (!Number.isNaN(num)) out[col] = num;
+          }
+        }
+        if (def.name === 'to_boolean') {
+          const col = def.column;
+          const fmt = (def.format || 'boolean').toLowerCase(); // 'boolean' | 'yesno' | 'yn' | '10'
+          if (col && out[col] != null) {
+            const raw = String(out[col]).trim().toLowerCase();
+            const truthy = new Set(['true','1','yes','y','on']);
+            const falsy = new Set(['false','0','no','n','off']);
+            let val;
+            if (truthy.has(raw)) val = true;
+            else if (falsy.has(raw)) val = false;
+            else val = out[col];
+            if (typeof val === 'boolean') {
+              if (fmt === 'boolean') out[col] = val;
+              else if (fmt === 'yesno') out[col] = val ? 'Yes' : 'No';
+              else if (fmt === 'yn') out[col] = val ? 'Y' : 'N';
+              else if (fmt === '10') out[col] = val ? 1 : 0;
+              else out[col] = val;
+            }
           }
         }
         if (def.name === 'strip_non_digits') {
@@ -444,7 +498,9 @@ router.post('/:id/clean', async (req, res) => {
               const ccDigits = cc.replace(/\D+/g, '');
               digits = ccDigits + digits;
             }
-            out[col] = digits;
+            const fmt = (def.format || 'digits').toLowerCase(); // 'digits' | 'e164'
+            if (fmt === 'e164') out[col] = digits ? ('+' + digits) : '';
+            else out[col] = digits;
           }
         }
         if (def.name === 'standardize_date') {
@@ -453,7 +509,9 @@ router.post('/:id/clean', async (req, res) => {
           if (col && out[col] != null) {
             const d = new Date(out[col]);
             if (!isNaN(d.getTime())) {
-              out[col] = fmt === 'ISO' ? d.toISOString() : d.toISOString();
+              if (fmt === 'ISO') out[col] = d.toISOString();
+              else if (fmt === 'YYYY-MM-DD' || fmt === 'DATE_ONLY') out[col] = d.toISOString().slice(0,10);
+              else out[col] = d.toISOString();
             }
           }
         }
@@ -478,6 +536,25 @@ router.post('/:id/clean', async (req, res) => {
           if (target && sources.length) {
             const vals = sources.map((s) => out[s]).filter((v) => v != null && v !== '');
             out[target] = vals.join(sep);
+          }
+        }
+        if (def.name === 'extract_email_domain') {
+          const src = def.column || 'email';
+          const target = def.target || 'email_domain';
+          const v = out[src];
+          if (typeof v === 'string' && v.includes('@')) {
+            out[target] = v.split('@').pop().trim().toLowerCase();
+          }
+        }
+        if (def.name === 'extract_domain') {
+          const src = def.column;
+          const target = def.target || 'domain';
+          const v = out[src];
+          if (typeof v === 'string') {
+            try {
+              if (v.includes('@')) out[target] = v.split('@').pop().trim().toLowerCase();
+              else { const u = new URL(v); out[target] = (u.hostname || '').toLowerCase(); }
+            } catch {}
           }
         }
       }
@@ -535,7 +612,7 @@ router.post('/:id/clean', async (req, res) => {
       .single();
     if (vErr) return res.status(400).json({ error: vErr.message });
 
-    // Filter pass: drop rows matching conditions
+    // Filter/Cleansing pass: drop/flag rows matching conditions
     const filterRules = (rules || []).filter((r) => Array.isArray(r.definition?.checks) && r.definition.checks.length);
     const evalCondition = (row, cond) => {
       // Very small parser: "Column OP Value" with OP in [==,!=,>,>=,<,<=]
@@ -567,6 +644,10 @@ router.post('/:id/clean', async (req, res) => {
         }
       } catch { return false; }
     };
+    const parseDate = (v) => {
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? null : d;
+    };
     // Outlier helper: z-score threshold
     const zscoreFilter = (col, threshold) => {
       const vals = (rows || []).map(r => Number(r.record?.[col])).filter(v => typeof v === 'number' && !Number.isNaN(v));
@@ -585,6 +666,9 @@ router.post('/:id/clean', async (req, res) => {
       return bad;
     };
     const filterDeletes = new Set();
+    let flaggedCount = 0;
+    // Cache for referential integrity checks
+    const refCache = new Map(); // key: `${domainId}::${column}` => Set of values
     for (const r of filterRules) {
       for (const chk of r.definition.checks || []) {
         if (chk.name === 'drop_if' && chk.condition) {
@@ -593,6 +677,135 @@ router.post('/:id/clean', async (req, res) => {
         if (chk.name === 'drop_if_null' && Array.isArray(chk.columns)) {
           for (const row of rows || []) {
             if (chk.columns.some((c) => row.record?.[c] == null || row.record[c] === '')) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'require_columns' && Array.isArray(chk.columns)) {
+          const action = (chk.action || 'drop').toLowerCase(); // 'drop' | 'flag'
+          for (const row of rows || []) {
+            const missing = chk.columns.some((c) => row.record?.[c] == null || row.record[c] === '');
+            if (missing) {
+              if (action === 'drop') filterDeletes.add(row.key_hash);
+              else flaggedCount++;
+            }
+          }
+        }
+        if (chk.name === 'drop_if_missing_pct_gt') {
+          const thr = Number(chk.threshold || 50);
+          for (const row of rows || []) {
+            const vals = Object.values(row.record || {});
+            if (!vals.length) continue;
+            const missing = vals.reduce((acc, v) => acc + ((v == null || v === '') ? 1 : 0), 0);
+            const pct = (missing / vals.length) * 100;
+            if (pct > thr) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'validate_email' && chk.column) {
+          const action = (chk.action || 'flag').toLowerCase();
+          const re = /^(?=.{1,254}$)(?=.{1,64}@)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
+          for (const row of rows || []) {
+            const ok = re.test(String(row.record?.[chk.column] ?? ''));
+            if (!ok) {
+              if (action === 'drop') filterDeletes.add(row.key_hash);
+              else flaggedCount++;
+            }
+          }
+        }
+        if (chk.name === 'drop_if_out_of_range' && chk.column) {
+          const min = chk.min !== undefined ? Number(chk.min) : null;
+          const max = chk.max !== undefined ? Number(chk.max) : null;
+          for (const row of rows || []) {
+            const v = Number(row.record?.[chk.column]);
+            if (Number.isNaN(v)) continue;
+            if ((min != null && v < min) || (max != null && v > max)) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'drop_if_not_in' && chk.column && Array.isArray(chk.values)) {
+          const allow = new Set(chk.values.map((x) => String(x)));
+          for (const row of rows || []) {
+            const v = row.record?.[chk.column];
+            if (!allow.has(String(v))) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'drop_if_pattern' && chk.column && chk.pattern) {
+          let re = null; try { re = new RegExp(chk.pattern, chk.flags || ''); } catch {}
+          if (re) {
+            for (const row of rows || []) {
+              const v = String(row.record?.[chk.column] ?? '');
+              if (re.test(v)) filterDeletes.add(row.key_hash);
+            }
+          }
+        }
+        if (chk.name === 'drop_if_date_not_between' && chk.column) {
+          const from = chk.from != null ? parseDate(chk.from) : null;
+          const to = chk.to != null ? parseDate(chk.to) : null;
+          for (const row of rows || []) {
+            const d = parseDate(row.record?.[chk.column]);
+            if (!d) continue;
+            if ((from && d < from) || (to && d > to)) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'drop_if_start_after_end' && chk.start && chk.end) {
+          for (const row of rows || []) {
+            const a = parseDate(row.record?.[chk.start]);
+            const b = parseDate(row.record?.[chk.end]);
+            if (a && b && a > b) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'drop_if_relation' && chk.left && chk.op && chk.right != null) {
+          const op = chk.op;
+          for (const row of rows || []) {
+            const lv = (typeof chk.left === 'string' && row.record?.[chk.left] !== undefined) ? row.record[chk.left] : chk.left;
+            const rv = (typeof chk.right === 'string' && row.record?.[chk.right] !== undefined) ? row.record[chk.right] : chk.right;
+            const A = typeof lv === 'number' ? lv : Number(lv);
+            const B = typeof rv === 'number' ? rv : Number(rv);
+            const L = (typeof lv === 'number' || typeof rv === 'number') ? (isNaN(A) ? lv : A) : String(lv ?? '');
+            const R = (typeof lv === 'number' || typeof rv === 'number') ? (isNaN(B) ? rv : B) : String(rv ?? '');
+            let bad = false;
+            switch (op) {
+              case '==': bad = !(L == R); break;
+              case '!=': bad = !(L != R); break;
+              case '>': bad = !(L > R); break;
+              case '>=': bad = !(L >= R); break;
+              case '<': bad = !(L < R); break;
+              case '<=': bad = !(L <= R); break;
+            }
+            if (bad) filterDeletes.add(row.key_hash);
+          }
+        }
+        if (chk.name === 'exists_in_domain' && chk.column && (chk.target_domain_id || chk.target_domain) && chk.target_column) {
+          // Build allowed set from another domain's current data
+          const targetId = String(chk.target_domain_id || chk.target_domain);
+          const cacheKey = `${targetId}::${chk.target_column}`;
+          let allowed = refCache.get(cacheKey);
+          if (!allowed) {
+            allowed = new Set();
+            let off = 0; const page = 1000;
+            // page through target domain_data to build set
+            while (true) {
+              const { data: refPage, error: refErr } = await supabaseAdmin
+                .from('domain_data')
+                .select('record')
+                .eq('domain_id', targetId)
+                .range(off, off + page - 1);
+              if (refErr) break;
+              if (!refPage || refPage.length === 0) break;
+              for (const r2 of refPage) {
+                const val = (r2?.record || {})[chk.target_column];
+                if (val != null) allowed.add(String(val));
+              }
+              if (refPage.length < page) break;
+              off += page;
+              if (off > 100000) break; // safety cap
+            }
+            refCache.set(cacheKey, allowed);
+          }
+          const action = (chk.action || 'flag').toLowerCase();
+          for (const row of rows || []) {
+            const v = row.record?.[chk.column];
+            if (!allowed.has(String(v))) {
+              if (action === 'drop') filterDeletes.add(row.key_hash);
+              else flaggedCount++;
+            }
           }
         }
         if (chk.name === 'drop_if_zscore_gt' && chk.column) {
@@ -686,6 +899,7 @@ router.post('/:id/clean', async (req, res) => {
 
     // Compute metrics overall and per rule
     const metrics = { changed_rows: changed, rule_count: rules?.length || 0 };
+    if (flaggedCount) metrics.flagged = flaggedCount;
     const perRuleMetrics = new Map();
     // Precompute per-rule changed row estimates and regex fails
     for (const r of rules || []) {
