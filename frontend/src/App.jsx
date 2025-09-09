@@ -1533,12 +1533,12 @@ function VersionsPanel({ domainId, onClose }) {
   const columns = preview && preview.length ? Object.keys(preview[0]) : [];
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
-      <div className="bg-white h-full w-[900px] border-l" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white h-full w-[900px] border-l flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b flex items-center justify-between"><div className="font-medium">Versions</div><div className="flex gap-2"><button className="px-3 py-1 rounded border" onClick={loadPreview}>Preview</button><button className="px-3 py-1 rounded bg-neutral-900 text-white" onClick={doClean}>Clean</button><button onClick={onClose} className="ml-2">✕</button></div></div>
         {loading ? (
           <div className="p-4 text-neutral-500">Loading…</div>
         ) : (
-          <div className="p-3 space-y-2">
+          <div className="flex-1 overflow-auto p-3 space-y-2">
             {versions.map((v) => (
               <div key={v.id} className="rounded-lg border border-neutral-300 p-3 bg-neutral-50">
                 <div className="flex items-center justify-between">
