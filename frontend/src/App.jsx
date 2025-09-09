@@ -426,8 +426,12 @@ function detectRuleCommand(text) {
   if (/^\s*split\s+fy\s+.*fystart.*fyend/i.test(t) || /split\s+.*year.*fystart.*fyend/i.test(t)) {
     return { kind: 'split_fy', column: 'Year' };
   }
-  // Normalize empty/NULL/N/A cells to null
-  if (/normalize\s+.*(empty|null|n\/a).*to\s+null/i.test(t)) {
+  // Normalize empty/NULL/N/A cells to <value>
+  m = t.match(/normalize\s+.*(empty|null|n\/a).*to\s+([A-Za-z0-9_\-+\/ ]+)/i);
+  if (m) {
+    return { kind: 'normalize_nulls', value: m[2].trim() };
+  }
+  if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
     return { kind: 'normalize_nulls' };
   }
   // Drop rows missing A, B, or C
@@ -566,10 +570,10 @@ function previewForRuleCommand(descriptor, rows) {
       const x = clone(r);
       for (const k of Object.keys(x)) {
         const v = x[k];
-        if (v == null) continue;
+        if (v == null) { if (descriptor.value !== undefined) x[k] = descriptor.value; continue; }
         if (typeof v === 'string') {
           const s = v.trim().toLowerCase();
-          if (tokens.has(s)) x[k] = null;
+          if (tokens.has(s)) x[k] = (descriptor.value !== undefined ? descriptor.value : null);
         }
       }
       return x;
@@ -874,8 +878,13 @@ async function generateRuleFromText(command, columns, accessToken) {
       ], checks: [], meta: { category: 'parsing' } }
     };
   }
-  // Normalize empty/NULL/N/A cells to null
-  if (/normalize\s+.*(empty|null|n\/a).*to\s+null/i.test(t)) {
+  // Normalize empty/NULL/N/A cells to <value>
+  m = t.match(/normalize\s+.*(empty|null|n\/a).*to\s+([A-Za-z0-9_\-+\/ ]+)/i);
+  if (m) {
+    const val = m[2].trim();
+    return { name: `Normalize empties to ${val}`, definition: { transforms: [{ name: 'normalize_nulls', tokens: ["", "NULL", "N/A", "-"], toValue: val }], checks: [], meta: { category: 'normalization' } } };
+  }
+  if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
     return { name: 'Normalize common empties to null', definition: { transforms: [{ name: 'normalize_nulls' }], checks: [], meta: { category: 'normalization' } } };
   }
   // Drop rows missing A, B, or C

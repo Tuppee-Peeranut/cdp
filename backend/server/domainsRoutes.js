@@ -445,12 +445,13 @@ router.post('/:id/clean', async (req, res) => {
           const cols = def.columns || Object.keys(out);
           const tokens = Array.isArray(def.tokens) && def.tokens.length ? def.tokens : Array.from(normalizeNullTokens);
           const tokenSet = new Set(tokens.map((t) => String(t).toLowerCase()));
+          const toValue = def.hasOwnProperty('toValue') ? def.toValue : null; // default is actual null
           for (const c of cols) {
             const v = out[c];
-            if (v == null) continue;
+            if (v == null) { if (def.hasOwnProperty('toValue')) out[c] = toValue; continue; }
             if (typeof v === 'string') {
               const s = v.trim();
-              if (tokenSet.has(s.toLowerCase())) out[c] = null;
+              if (tokenSet.has(s.toLowerCase())) out[c] = toValue;
             }
           }
         }
