@@ -1786,6 +1786,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   const [showRules, setShowRules] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
   const [serverTasks, setServerTasks] = useState([]);
+  const [latestStats, setLatestStats] = useState(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -1811,6 +1812,19 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
 
   // Load server tasks on domain change
   useEffect(() => { fetchServerTasks(); }, [fetchServerTasks]);
+
+  // Load latest-version stats for the active domain (server mode)
+  useEffect(() => { (async () => {
+    try {
+      if (!domainId) { setLatestStats(null); return; }
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!token) { setLatestStats(null); return; }
+      const res = await fetch(`/api/domains/${domainId}/version/latest/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { setLatestStats(null); return; }
+      const stats = await res.json();
+      setLatestStats({ rowCount: Number(stats?.rowCount || 0), totalAmount: Number(stats?.totalAmount || 0) });
+    } catch { setLatestStats(null); }
+  })(); }, [domainId, serverTasks]);
 
   const items = useMemo(() => {
     if (domainId) {
@@ -1975,7 +1989,11 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     if (domainId) {
       try {
         const token = (await supabase.auth.getSession()).data?.session?.access_token;
-        const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+        if (!token) {
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'You are not signed in. Please sign in to create a server task.' }]);
+          return;
+        }
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
         const body = {
           domain_id: domainId,
           kind,
@@ -1987,10 +2005,16 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           },
         };
         const res = await fetch('/api/tasks', { method: 'POST', headers, body: JSON.stringify(body) });
-        if (!res.ok) throw new Error((await res.json()).error || 'Create task failed');
+        if (!res.ok) {
+          let msg = 'Create task failed';
+          try { msg = (await res.json()).error || msg; } catch {}
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: msg }]);
+          return;
+        }
         await fetchServerTasks();
       } catch (e) {
-        console.error('create server task failed', e);
+        setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Create task error: ${e.message || e}` }]);
+        return;
       }
     } else {
       const task = {
@@ -2009,7 +2033,6 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       ...m,
       { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} records.` },
     ]);
-    setCurrentBatch(null);
     addToast("Task initiated");
   };
 
@@ -2260,7 +2283,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
                 <Send size={16} />
               </button>
               <button
-                disabled={busy}
+                disabled={!currentBatch}
                 onClick={submitBatch}
                 className="p-2 rounded-lg text-emerald-600 hover:bg-neutral-200 hover:text-emerald-500 disabled:opacity-50"
                 aria-label="Task"
@@ -2305,8 +2328,42 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
                   <div className="text-xs text-neutral-500 mt-1">
                     {new Date(t.createdAt).toLocaleString()} · {t.rowCount} rows · Total {t.totalAmount.toLocaleString()}
                   </div>
+                  {domainId && latestStats && (
+                    <div className="text-xs text-neutral-500 mt-1">
+                      Latest version: {latestStats.rowCount} rows · Total {latestStats.totalAmount.toLocaleString()}
+                    </div>
+                  )}
                   {t.endpoint && (
                     <div className="text-xs text-neutral-500 mt-1 truncate">API: {t.endpoint}</div>
+                  )}
+                  {domainId && (
+                    <div className="mt-2 flex justify-start">
+                      <button
+                        className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs flex items-center gap-1"
+                        onClick={async () => {
+                          try {
+                            const token = (await supabase.auth.getSession()).data?.session?.access_token;
+                            const res = await fetch(`/api/domains/${domainId}/version/latest/export.csv`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                            if (!res.ok) throw new Error('Download failed');
+                            const blob = await res.blob();
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            const base = (t.fileName || 'data').replace(/\.[^.]+$/, '');
+                            a.href = url;
+                            a.download = `${base}_latest.csv`;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            URL.revokeObjectURL(url);
+                          } catch (e) {
+                            addToast?.(e.message || 'Download failed');
+                          }
+                        }}
+                        title="Download latest version as CSV"
+                      >
+                        <Download size={14} /> Download CSV
+                      </button>
+                    </div>
                   )}
                   {t.status !== "completed" && (
                     <div className="mt-2 flex justify-end">

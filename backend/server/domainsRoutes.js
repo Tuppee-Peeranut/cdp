@@ -234,6 +234,128 @@ router.get('/:id/version/latest/preview', async (req, res) => {
   res.json((data || []).map((r) => ({ ...r.record, source_version_id: r.source_version_id })));
 });
 
+// Export latest version's historical data as CSV
+router.get('/:id/version/latest/export.csv', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = await resolveTenantId(req);
+    const { data: dom, error: dErr } = await supabaseAdmin
+      .from('domains')
+      .select('tenant_id, name')
+      .eq('id', id)
+      .single();
+    if (dErr) return res.status(400).json({ error: dErr.message });
+    if (!dom || dom.tenant_id !== tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+    // Find latest domain_version for this domain
+    const { data: latest, error: vErr } = await supabaseAdmin
+      .from('domain_versions')
+      .select('id')
+      .eq('domain_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (vErr) return res.status(400).json({ error: vErr.message });
+    if (!latest?.id) return res.status(404).json({ error: 'No versions found' });
+
+    // Page through history to gather all records for latest version
+    const pageSize = 1000;
+    let offset = 0;
+    /** @type {Array<Record<string, any>>} */
+    const rows = [];
+    while (true) {
+      const { data, error } = await supabaseAdmin
+        .from('domain_history')
+        .select('record')
+        .eq('domain_id', id)
+        .eq('source_version_id', latest.id)
+        .range(offset, offset + pageSize - 1);
+      if (error) return res.status(400).json({ error: error.message });
+      const batch = (data || []).map((r) => r.record || {});
+      rows.push(...batch);
+      if (!data || data.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    // Compute ordered headers (union of keys, preserve first-seen order)
+    const headerSet = new Set();
+    for (const r of rows) for (const k of Object.keys(r || {})) headerSet.add(k);
+    const headers = Array.from(headerSet);
+
+    // Build CSV via XLSX
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+    const csv = XLSX.utils.sheet_to_csv(ws);
+
+    // Send as attachment
+    const safeName = String(dom.name || `domain_${id}`).replace(/[^a-z0-9_\-]+/gi, '_').toLowerCase();
+    const fileName = `${safeName}_latest.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(csv);
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Export failed' });
+  }
+});
+
+// Stats for latest version (row count and total amount if present)
+router.get('/:id/version/latest/stats', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tenantId = await resolveTenantId(req);
+    const { data: dom, error: dErr } = await supabaseAdmin
+      .from('domains')
+      .select('tenant_id')
+      .eq('id', id)
+      .single();
+    if (dErr) return res.status(400).json({ error: dErr.message });
+    if (!dom || dom.tenant_id !== tenantId) return res.status(403).json({ error: 'Forbidden' });
+
+    const { data: latest, error: vErr } = await supabaseAdmin
+      .from('domain_versions')
+      .select('id')
+      .eq('domain_id', id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (vErr) return res.status(400).json({ error: vErr.message });
+    if (!latest?.id) return res.json({ rowCount: 0, totalAmount: 0 });
+
+    // Count rows quickly
+    const { count, error: cErr } = await supabaseAdmin
+      .from('domain_history')
+      .select('id', { count: 'exact', head: true })
+      .eq('domain_id', id)
+      .eq('source_version_id', latest.id);
+    if (cErr) return res.status(400).json({ error: cErr.message });
+
+    // Sum Amount if present by scanning in pages
+    const pageSize = 1000;
+    let offset = 0;
+    let totalAmount = 0;
+    while (true) {
+      const { data, error } = await supabaseAdmin
+        .from('domain_history')
+        .select('record')
+        .eq('domain_id', id)
+        .eq('source_version_id', latest.id)
+        .range(offset, offset + pageSize - 1);
+      if (error) return res.status(400).json({ error: error.message });
+      for (const row of data || []) {
+        const rec = row.record || {};
+        const val = rec.Amount ?? rec.amount ?? null;
+        const num = typeof val === 'number' ? val : Number(val);
+        if (!Number.isNaN(num) && Number.isFinite(num)) totalAmount += num;
+      }
+      if (!data || data.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    res.json({ rowCount: count || 0, totalAmount });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'Stats failed' });
+  }
+});
+
 // Clean endpoint - apply transforms of enabled rules to current data
 router.post('/:id/clean', async (req, res) => {
   try {
