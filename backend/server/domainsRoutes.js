@@ -735,6 +735,12 @@ router.post('/:id/clean', async (req, res) => {
             }
           }
         }
+        if (chk.name === 'drop_if_all' && Array.isArray(chk.conditions) && chk.conditions.length) {
+          for (const row of rows || []) {
+            const allTrue = chk.conditions.every((cond) => evalCondition(row, cond));
+            if (allTrue) filterDeletes.add(row.key_hash);
+          }
+        }
         if (chk.name === 'drop_if_date_not_between' && chk.column) {
           const from = chk.from != null ? parseDate(chk.from) : null;
           const to = chk.to != null ? parseDate(chk.to) : null;

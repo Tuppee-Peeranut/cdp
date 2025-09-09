@@ -409,7 +409,60 @@ function answerLocalQuestion(prompt, batch) {
  */
 function detectRuleCommand(text) {
   if (!text) return null;
-  const t = String(text).trim();
+  const t = String(text).replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  // Title-case X and Y; trim whitespace
+  let m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
+  if (m) {
+    // columns separated by 'and' or ','
+    const raw = m[1].trim();
+    const cols = raw.split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'title_trim', columns: cols };
+  }
+  // Split Age into AgeFrom/AgeTo (support 60+)
+  if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
+    return { kind: 'split_age' };
+  }
+  // Split FY Year into FYStart/FYEnd
+  if (/^\s*split\s+fy\s+.*fystart.*fyend/i.test(t) || /split\s+.*year.*fystart.*fyend/i.test(t)) {
+    return { kind: 'split_fy', column: 'Year' };
+  }
+  // Normalize empty/NULL/N/A cells to null
+  if (/normalize\s+.*(empty|null|n\/a).*to\s+null/i.test(t)) {
+    return { kind: 'normalize_nulls' };
+  }
+  // Drop rows missing A, B, or C
+  m = t.match(/^\s*drop\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (m) {
+    const cols = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'filter_required', columns: cols };
+  }
+  // Drop rows with >X% empty fields
+  m = t.match(/^\s*drop\s+rows\s+with\s*>\s*(\d+)\s*%\s+empty/i);
+  if (m) {
+    return { kind: 'filter_missing_pct', threshold: Number(m[1]) };
+  }
+  // Drop rows with Unit <= 0 or Amount < 1000
+  m = t.match(/^\s*drop\s+rows\s+with\s+(.+?)\s*$/i);
+  if (m) {
+    const part = m[1];
+    const conds = [];
+    const rx = /(\b[\w .-]+)\s*(<=|<|>=|>)\s*([0-9]+(?:\.[0-9]+)?)/gi;
+    let mm;
+    while ((mm = rx.exec(part)) !== null) {
+      conds.push({ column: mm[1].trim(), op: mm[2], value: Number(mm[3]) });
+    }
+    if (conds.length) return { kind: 'filter_ranges', ranges: conds };
+  }
+  // Drop rows where Remark contains 'X'
+  m = t.match(/^\s*drop\s+rows\s+where\s+([A-Za-z0-9_. \-]+)\s+contains\s+['\"](.+?)['\"]/i);
+  if (m) {
+    return { kind: 'filter_contains', column: m[1].trim(), text: m[2].trim(), ci: true };
+  }
+  // Drop rows where A == X and B == Y
+  m = t.match(/^\s*drop\s+rows\s+where\s+(.+?)\s+and\s+(.+?)\s*$/i);
+  if (m) {
+    return { kind: 'filter_and', conditions: [m[1].trim(), m[2].trim()] };
+  }
   // Dedup by <column>
   const dedupRxes = [
     /^\s*(?:dedup|dedupe|deduplicate)\s+(?:by\s+)?\"([^\"]+)\"\s*$/i,
@@ -463,6 +516,7 @@ function previewForRuleCommand(descriptor, rows) {
     return out;
   };
   const standardizePhone = (val) => String(val ?? '').replace(/\D+/g, '');
+  const titleCase = (s) => String(s).toLowerCase().replace(/\b([a-z])(\w*)/g, (_, a, b) => a.toUpperCase() + b);
   const evalCondition = (row, cond) => {
     try {
       const m = String(cond).match(/^\s*([^<>!=]+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$/);
@@ -491,6 +545,66 @@ function previewForRuleCommand(descriptor, rows) {
       }
     } catch { return false; }
   };
+
+  // Title + trim preview
+  if (descriptor.kind === 'title_trim' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const c of cols) {
+        if (typeof x[c] === 'string') x[c] = titleCase(x[c].trim());
+      }
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Normalize nulls preview
+  if (descriptor.kind === 'normalize_nulls') {
+    const tokens = new Set(['', 'null', 'n/a', 'na', 'none', '-']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const k of Object.keys(x)) {
+        const v = x[k];
+        if (v == null) continue;
+        if (typeof v === 'string') {
+          const s = v.trim().toLowerCase();
+          if (tokens.has(s)) x[k] = null;
+        }
+      }
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Split Age preview
+  if (descriptor.kind === 'split_age') {
+    const cols = ensureCols(baseCols, ['AgeFrom', 'AgeTo']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const v = String(x['Age'] ?? '');
+      let m1 = v.match(/^(\d+)-(\d+)$/);
+      let m2 = v.match(/^(\d+)\+$/);
+      if (m1) { x['AgeFrom'] = m1[1]; x['AgeTo'] = m1[2]; }
+      else if (m2) { x['AgeFrom'] = m2[1]; x['AgeTo'] = null; }
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
+
+  // Split FY preview
+  if (descriptor.kind === 'split_fy') {
+    const src = byLower.get('year') || 'Year';
+    const cols = ensureCols(baseCols, ['FYStart','FYEnd']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const v = String(x[src] ?? '');
+      const m = v.match(/^\s*FY(\d{2})\/(\d{2})\s*$/i);
+      if (m) { x['FYStart'] = m[1]; x['FYEnd'] = m[2]; }
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
 
   // Dedup preview
   if (descriptor.kind === 'dedup' && descriptor.column) {
@@ -556,6 +670,82 @@ function previewForRuleCommand(descriptor, rows) {
     const out = [];
     for (const r of sampleRows) {
       if (!evalCondition(r, descriptor.condition)) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: required columns
+  if (descriptor.kind === 'filter_required' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = [];
+    for (const r of sampleRows) {
+      const missing = cols.some((c) => r[c] == null || r[c] === '');
+      if (!missing) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: missing percentage
+  if (descriptor.kind === 'filter_missing_pct') {
+    const thr = Number(descriptor.threshold || 50);
+    const out = [];
+    for (const r of sampleRows) {
+      const vals = Object.values(r || {});
+      const missing = vals.reduce((acc, v) => acc + ((v == null || v === '') ? 1 : 0), 0);
+      const pct = vals.length ? (missing / vals.length) * 100 : 0;
+      if (pct <= thr) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: numeric ranges (any violation drops)
+  if (descriptor.kind === 'filter_ranges' && Array.isArray(descriptor.ranges)) {
+    const out = [];
+    for (const r of sampleRows) {
+      let bad = false;
+      for (const rg of descriptor.ranges) {
+        const col = byLower.get(rg.column.toLowerCase()) || rg.column;
+        const vRaw = r[col];
+        if (vRaw == null || vRaw === '') { bad = true; break; }
+        const v = Number(vRaw);
+        if (Number.isNaN(v)) { bad = true; break; }
+        switch (rg.op) {
+          case '<': if (v < rg.value) bad = true; break;
+          case '<=': if (v <= rg.value) bad = true; break;
+          case '>': if (v > rg.value) bad = true; break;
+          case '>=': if (v >= rg.value) bad = true; break;
+        }
+        if (bad) break;
+      }
+      if (!bad) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: contains
+  if (descriptor.kind === 'filter_contains' && descriptor.column && descriptor.text) {
+    const col = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const needle = descriptor.ci ? String(descriptor.text).toLowerCase() : String(descriptor.text);
+    const out = [];
+    for (const r of sampleRows) {
+      const hay = String(r[col] ?? '');
+      const hit = descriptor.ci ? hay.toLowerCase().includes(needle) : hay.includes(needle);
+      if (!hit) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: AND of two conditions
+  if (descriptor.kind === 'filter_and' && Array.isArray(descriptor.conditions)) {
+    const out = [];
+    for (const r of sampleRows) {
+      const both = descriptor.conditions.every((c) => evalCondition(r, c));
+      if (!both) out.push(r);
       if (out.length >= 20) break;
     }
     return { columns: baseCols, rows: out };
@@ -654,9 +844,72 @@ async function generateRuleFromText(command, columns, accessToken) {
     }
     return null;
   };
-  const t = String(command || '').trim();
+  const t = String(command || '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  // Title-case X and Y; trim whitespace
+  let m = null;
+  m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
+  if (m) {
+    const cols = m[1].split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return {
+      name: `Titlecase + trim ${cols.join(', ')}`,
+      definition: { transforms: [{ name: 'trim', columns: cols }, { name: 'titlecase', columns: cols }], checks: [], meta: { category: 'standardization' } }
+    };
+  }
+  // Split Age into AgeFrom/AgeTo
+  if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
+    return {
+      name: 'Split Age into AgeFrom/AgeTo',
+      definition: { transforms: [
+        { name: 'split', column: 'Age', pattern: '^(\\\\d+)-(\\\\d+)$', targets: ['AgeFrom','AgeTo'] },
+        { name: 'split', column: 'Age', pattern: '^(\\\\d+)\\\\+$', targets: ['AgeFrom'] }
+      ], checks: [], meta: { category: 'parsing' } }
+    };
+  }
+  // Split FY Year
+  if (/^\s*split\s+fy\s+.*fystart.*fyend/i.test(t) || /split\s+.*year.*fystart.*fyend/i.test(t)) {
+    return {
+      name: 'Split FY into FYStart/FYEnd',
+      definition: { transforms: [
+        { name: 'split', column: 'Year', pattern: '^FY(\\\\d{2})\\\\/(\\\\d{2})$', targets: ['FYStart','FYEnd'] }
+      ], checks: [], meta: { category: 'parsing' } }
+    };
+  }
+  // Normalize empty/NULL/N/A cells to null
+  if (/normalize\s+.*(empty|null|n\/a).*to\s+null/i.test(t)) {
+    return { name: 'Normalize common empties to null', definition: { transforms: [{ name: 'normalize_nulls' }], checks: [], meta: { category: 'normalization' } } };
+  }
+  // Drop rows missing A, B, or C
+  m = t.match(/^\s*drop\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { name: `Drop rows missing ${colsList.join(', ')}`, definition: { transforms: [], checks: [{ name: 'require_columns', columns: colsList, action: 'drop' }], meta: { category: 'completeness' } } };
+  }
+  // Drop rows with >X% empty fields
+  m = t.match(/^\s*drop\s+rows\s+with\s*>\s*(\d+)\s*%\s+empty/i);
+  if (m) {
+    return { name: `Drop rows with >${m[1]}% empty`, definition: { transforms: [], checks: [{ name: 'drop_if_missing_pct_gt', threshold: Number(m[1]) }], meta: { category: 'completeness' } } };
+  }
+  // Drop rows with Unit <= 0 or Amount < 1000
+  if (/^\s*drop\s+rows\s+with\s+unit\s*<=\s*0\s+or\s+amount\s*<\s*1000/i.test(t)) {
+    return { name: 'Drop invalid Unit/Amount', definition: { transforms: [], checks: [
+      { name: 'drop_if_null', columns: ['Unit','Amount'] },
+      { name: 'drop_if_out_of_range', column: 'Unit', min: 0.000001 },
+      { name: 'drop_if_out_of_range', column: 'Amount', min: 1000 }
+    ], meta: { category: 'accuracy' } } };
+  }
+  // Drop rows where Remark contains '...'
+  m = t.match(/^\s*drop\s+rows\s+where\s+remark\s+contains\s+['\"](.+?)['\"]/i);
+  if (m) {
+    return { name: `Drop rows where Remark contains ${m[1]}`, definition: { transforms: [], checks: [{ name: 'drop_if_pattern', column: 'Remark', pattern: m[1], flags: 'i' }], meta: { category: 'filter' } } };
+  }
+  // Drop rows where Business == Dealer and Remark == Discounted
+  if (/^\s*drop\s+rows\s+where\s+business\s*==\s*dealer\s+and\s+remark\s*==\s*discounted/i.test(t)) {
+    return { name: 'Drop Dealer & Discounted', definition: { transforms: [], checks: [
+      { name: 'drop_if_all', conditions: ["Business == 'Dealer'", "Remark == 'Discounted'"] }
+    ], meta: { category: 'filter' } } };
+  }
   // Dedup by X keep latest/first
-  let m = t.match(/dedup(?:e|licate)?\s+by\s+([^,]+?)(?:\s+keep\s+(first|latest|last))?$/i);
+  m = t.match(/dedup(?:e|licate)?\s+by\s+([^,]+?)(?:\s+keep\s+(first|latest|last))?$/i);
   if (m) {
     const col = resolveCol(m[1], null) || m[1].trim();
     const keep = (m[2] || 'last').toLowerCase() === 'first' ? 'first' : 'last';
