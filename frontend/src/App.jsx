@@ -180,12 +180,12 @@ const MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
  */
 async function parseWorkbook(file) {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: "array" });
+  const workbook = XLSX.read(data, { type: "array", cellDates: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
 
   // Clean raw rows (trim headers and string values), keep original shape
-  const rawRows = json.map((r) => {
+  let rawRows = json.map((r) => {
     const cleaned = {};
     for (const k of Object.keys(r)) {
       const key = String(k).trim();
@@ -195,6 +195,48 @@ async function parseWorkbook(file) {
     return cleaned;
   });
   const rawColumns = Object.keys(rawRows[0] || {});
+
+  // Normalize ONLY Excel serials to D/M/YYYY; keep original strings as-is for previews
+  try {
+    const EXCEL_MIN = 20000, EXCEL_MAX = 80000;
+    const isExcelSerial = (v) => typeof v === 'number' && isFinite(v) && v >= EXCEL_MIN && v <= EXCEL_MAX;
+    const isExcelSerialStr = (s) => {
+      if (s == null || s === '') return false; const n = Number(s);
+      return !Number.isNaN(n) && isExcelSerial(n);
+    };
+    const looksLikeDateHeader = (name = '') => /date|วันที่|invoice\s*date|create\s*date|regist\w*\s*at/i.test(String(name));
+    const toDMY = (d) => `${d.getUTCDate()}/${d.getUTCMonth() + 1}/${d.getUTCFullYear()}`; // D/M/YYYY (no zero pad)
+    const excelToDate = (n) => {
+      const base = Date.UTC(1899, 11, 30); // Excel epoch
+      const ms = base + n * 86400000;
+      return new Date(ms);
+    };
+    const cols = rawColumns;
+    const sample = rawRows.slice(0, 200);
+    const candidates = new Set();
+    for (const c of cols) {
+      let nonNull = 0, hits = 0;
+      for (const r of sample) {
+        const v = r?.[c]; if (v == null || v === '') continue; nonNull++;
+        if (isExcelSerial(v) || isExcelSerialStr(v)) hits++;
+      }
+      const ratio = nonNull ? (hits / nonNull) : 0;
+      if (looksLikeDateHeader(c) ? hits>0 : ratio >= 0.2) candidates.add(c);
+    }
+    if (candidates.size) {
+      rawRows = rawRows.map((row) => {
+        const out = { ...row };
+        for (const c of candidates) {
+          const v = out[c]; if (v == null || v === '') continue;
+          let d = null;
+          if (typeof v === 'number' && isExcelSerial(v)) d = excelToDate(v);
+          else if (isExcelSerialStr(v)) d = excelToDate(Number(v));
+          if (d && !isNaN(d.getTime())) out[c] = toDMY(d);
+        }
+        return out;
+      });
+    }
+  } catch {}
 
   /** @type {BatchRow[]} */
   const rows = rawRows.map((norm) => {
@@ -301,9 +343,15 @@ function validateWithRules(rows, rulesets, domain) {
 /** Ask OpenAI (BYOK client-side; proxy in prod) */
 async function askOpenAI(apiKey, model, userPrompt, context, accessToken) {
   const sys = `You are dP Copilot, a careful data platform assistant.
-- Explain validations and suggest fixes succinctly.
-- Never fabricate banking details.
-- If asked to "submit", remind that this MVP only simulates submission.`;
+Answer concisely with quantitative results using the provided Columns, Profile, and sampleRows.
+Rules:
+- Prefer exact counts/percentages from Profile when available.
+- Use one-line factual answers unless asked for details.
+- When asked to SHOW or list distinct values for a column, output a concise inline list of the values (use Profile.distinctValues[col] if available, otherwise Profile.topValues[col] limited to top 10 with counts). Example: Distinct values in Type: "A", "B", "C", "D".
+- Format examples: "5.3% of rows have NULL in CustomerName"; "124 duplicates found in NationalID"; "12 rows have Birthdate in the future"; "Min Age = 1, Max Age = 97"; "Distinct values in Type: X, Y, Z".
+- If Profile is based on a sample, append: "(based on sample of N rows)".
+- Do not invent columns not present. Use the column names exactly as given in Columns.
+- If a requested column is missing, say so briefly and suggest 3-5 closest column names.`;
   const ctx = JSON.stringify(context).slice(0, 12000);
   const body = {
     model: model || "gpt-4o-mini",
@@ -403,7 +451,107 @@ function answerLocalQuestion(prompt, batch) {
  */
 function detectRuleCommand(text) {
   if (!text) return null;
-  const t = String(text).trim();
+  const t = String(text).replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  let m = null;
+  // Split <col> into <a> and <b> using underscore/space/dash
+  m = t.match(/^\s*split\s+([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*(?:[,/&+]\s*|\s+and\s+)\s*([A-Za-z0-9_ .-]+)\s+using\s+(underscore|space|dash|hyphen|slash)\s*$/i);
+  if (m) {
+    const col = m[1].trim(); const a = m[2].trim(); const b = m[3].trim(); const how = m[4].toLowerCase();
+    const sep = how === 'underscore' ? '_' : how === 'space' ? '\\s+' : how === 'slash' ? '/' : '[-_]';
+    return { kind: 'split', column: col, targets: [a, b], separators: [sep] };
+  }
+  // Normalize casing to lower/upper in <Column>
+  m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'upper', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Simple forms: lowercase/uppercase in <Column>
+  m = t.match(/^\s*(?:lower\s*-?\s*case|lowercase)\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: (m[1]||'').split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  m = t.match(/^\s*(?:upper\s*-?\s*case|uppercase)\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'upper', columns: (m[1]||'').split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Replace "x" with "y" in <Column>
+  m = t.match(/^\s*replace\s+"(.+?)"\s+with\s+"(.+?)"\s+in\s+(.+)\s*$/i);
+  if (m) return { kind: 'replace_in', from: m[1], to: m[2], columns: m[3].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Map Gender values so A -> B and C -> D
+  m = t.match(/^\s*map\s+([A-Za-z0-9_ .-]+)\s+values\s+so\s+(.+)$/i);
+  if (m) {
+    const col = m[1].trim();
+    const pairs = {};
+    (m[2] || '').split(/\s*(?:,|;|\s+and\s+)\s*/i).forEach(part => {
+      const pm = part.match(/^(.+?)\s*(?:→|->)\s*(.+)$/);
+      if (pm) pairs[pm[1].trim()] = pm[2].trim();
+    });
+    if (Object.keys(pairs).length) return { kind: 'map_values', column: col, mapping: pairs };
+  }
+  // Relation filter: Filter out rows where A OP B
+  m = t.match(/^\s*filter\s+out\s+rows\s+where\s+([A-Za-z0-9_ .-]+)\s*(==|!=|>=|<=|>|<)\s*([A-Za-z0-9_ .-]+)\s*$/i);
+  if (m) return { kind: 'filter_relation', left: m[1].trim(), op: m[2], right: m[3].trim() };
+  // Title-case X and Y; trim whitespace
+  m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
+  if (m) {
+    // columns separated by 'and' or ','
+    const raw = m[1].trim();
+    const cols = raw.split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'title_trim', columns: cols };
+  }
+  // Title-case columns (no trim)
+  m = t.match(/^\s*title-?case\s+(.+?)\s*$/i);
+  if (m) {
+    const raw = m[1].trim();
+    const cols = raw.split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'titlecase_in', columns: cols };
+  }
+  // Split Age into AgeFrom/AgeTo (support 60+)
+  if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
+    return { kind: 'split_age' };
+  }
+  // Split FY Year into FYStart/FYEnd
+  if (/^\s*split\s+fy\s+.*fystart.*fyend/i.test(t) || /split\s+.*year.*fystart.*fyend/i.test(t)) {
+    return { kind: 'split_fy', column: 'Year' };
+  }
+  // Normalize empty/NULL/N/A cells to <value>
+  m = t.match(/normalize\s+.*(empty|null|n\/a).*to\s+([A-Za-z0-9_\-+\/ ]+)/i);
+  if (m) {
+    return { kind: 'normalize_nulls', value: m[2].trim() };
+  }
+  if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
+    return { kind: 'normalize_nulls' };
+  }
+  // Drop/Remove/Delete rows missing A, B, or C
+  m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (!m) m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+with\s+missing\s+(.+?)\.?\s*$/i);
+  if (m) {
+    const cols = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'filter_required', columns: cols };
+  }
+  // Drop rows with >X% empty fields
+  m = t.match(/^\s*drop\s+rows\s+with\s*>\s*(\d+)\s*%\s+empty/i);
+  if (m) {
+    return { kind: 'filter_missing_pct', threshold: Number(m[1]) };
+  }
+  // Drop rows with Unit <= 0 or Amount < 1000
+  m = t.match(/^\s*drop\s+rows\s+with\s+(.+?)\s*$/i);
+  if (m) {
+    const part = m[1];
+    const conds = [];
+    const rx = /(\b[\w .-]+)\s*(<=|<|>=|>)\s*([0-9]+(?:\.[0-9]+)?)/gi;
+    let mm;
+    while ((mm = rx.exec(part)) !== null) {
+      conds.push({ column: mm[1].trim(), op: mm[2], value: Number(mm[3]) });
+    }
+    if (conds.length) return { kind: 'filter_ranges', ranges: conds };
+  }
+  // Drop rows where Remark contains 'X'
+  m = t.match(/^\s*drop\s+rows\s+where\s+([A-Za-z0-9_. \-]+)\s+contains\s+['\"](.+?)['\"]/i);
+  if (m) {
+    return { kind: 'filter_contains', column: m[1].trim(), text: m[2].trim(), ci: true };
+  }
+  // Drop rows where A == X and B == Y
+  m = t.match(/^\s*drop\s+rows\s+where\s+(.+?)\s+and\s+(.+?)\s*$/i);
+  if (m) {
+    return { kind: 'filter_and', conditions: [m[1].trim(), m[2].trim()] };
+  }
   // Dedup by <column>
   const dedupRxes = [
     /^\s*(?:dedup|dedupe|deduplicate)\s+(?:by\s+)?\"([^\"]+)\"\s*$/i,
@@ -414,6 +562,25 @@ function detectRuleCommand(text) {
     const m = t.match(rx);
     if (m && m[1]) return { kind: 'dedup', column: m[1].trim() };
   }
+  // Normalize casing
+  if (/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s*$/i.test(t)) {
+    return { kind: 'normalize_case', mode: 'lower' };
+  }
+  if (/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s*$/i.test(t)) {
+    return { kind: 'normalize_case', mode: 'upper' };
+  }
+  // Standardize phone numbers (column optional)
+  const phoneM = t.match(/^\s*(?:standardize|normalize)\s+phone\s+numbers?(?:\s+in\s+([A-Za-z0-9_ .-]+))?\s*$/i);
+  if (phoneM) return { kind: 'standardize_phone', column: phoneM[1]?.trim() || null };
+  // Split Full Name into First/Last
+  const splitM = t.match(/^\s*split\s+([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*(?:[,/&+]\s*|\s+and\s+)\s*([A-Za-z0-9_ .-]+)\s*$/i);
+  if (splitM) return { kind: 'split', column: splitM[1].trim(), targets: [splitM[2].trim(), splitM[3].trim()] };
+  // Merge A + B into C
+  const mergeM = t.match(/^\s*merge\s+([A-Za-z0-9_ .-]+)\s*\+\s*([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*$/i);
+  if (mergeM) return { kind: 'merge', sources: [mergeM[1].trim(), mergeM[2].trim()], target: mergeM[3].trim() };
+  // Filter out rows where Condition
+  const filterM = t.match(/^\s*filter\s+out\s+rows\s+where\s+(.+)$/i);
+  if (filterM) return { kind: 'filter', condition: filterM[1].trim() };
   return null;
 }
 
@@ -424,12 +591,123 @@ function detectRuleCommand(text) {
 function previewForRuleCommand(descriptor, rows) {
   if (!descriptor || !Array.isArray(rows)) return { columns: [], rows: [] };
   const sampleRows = rows.slice(0, 1000); // cap for speed
+  const baseCols = Object.keys(sampleRows[0] || {});
+  const byLower = new Map(baseCols.map((c) => [String(c).toLowerCase(), c]));
+
+  // Helpers
+  const clone = (r) => JSON.parse(JSON.stringify(r));
+  const ensureCols = (cols, added) => Array.from(new Set([...(cols || []), ...(added || [])]));
+  const applyNormalize = (r, mode) => {
+    const out = clone(r);
+    for (const k of Object.keys(out)) {
+      if (typeof out[k] === 'string') out[k] = mode === 'upper' ? out[k].toUpperCase() : out[k].toLowerCase();
+    }
+    return out;
+  };
+  const standardizePhone = (val) => String(val ?? '').replace(/\D+/g, '');
+  const titleCase = (s) => String(s).toLowerCase().replace(/\b([a-z])(\w*)/g, (_, a, b) => a.toUpperCase() + b);
+  const evalCondition = (row, cond) => {
+    try {
+      const m = String(cond).match(/^\s*([^<>!=]+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$/);
+      if (!m) return false;
+      const col = (byLower.get(m[1].trim().toLowerCase()) || m[1]).trim();
+      const op = m[2];
+      let rhsRaw = m[3].trim();
+      let rhs;
+      if ((rhsRaw.startsWith('\"') && rhsRaw.endsWith('\"')) || (rhsRaw.startsWith("'") && rhsRaw.endsWith("'"))) rhs = rhsRaw.slice(1, -1);
+      else if (!isNaN(Number(rhsRaw))) rhs = Number(rhsRaw);
+      else rhs = rhsRaw;
+      const lhs = row[col];
+      const a = typeof lhs === 'number' ? lhs : Number(lhs);
+      const b = typeof rhs === 'number' ? rhs : Number(rhs);
+      const comparable = (x) => (typeof x === 'number' && !Number.isNaN(x)) ? x : String(x ?? '');
+      const A = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(a) ? lhs : a) : comparable(lhs);
+      const B = (typeof lhs === 'number' || typeof rhs === 'number') ? (isNaN(b) ? rhs : b) : comparable(rhs);
+      switch (op) {
+        case '==': return A == B;
+        case '!=': return A != B;
+        case '>': return A > B;
+        case '>=': return A >= B;
+        case '<': return A < B;
+        case '<=': return A <= B;
+        default: return false;
+      }
+    } catch { return false; }
+  };
+
+  // Title + trim preview
+  if (descriptor.kind === 'title_trim' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const c of cols) {
+        if (typeof x[c] === 'string') x[c] = titleCase(x[c].trim());
+      }
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Title-case in columns (no trim)
+  if (descriptor.kind === 'titlecase_in' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = titleCase(x[c]);
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Normalize nulls preview
+  if (descriptor.kind === 'normalize_nulls') {
+    const tokens = new Set(['', 'null', 'n/a', 'na', 'none', '-']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const k of Object.keys(x)) {
+        const v = x[k];
+        if (v == null) { if (descriptor.value !== undefined) x[k] = descriptor.value; continue; }
+        if (typeof v === 'string') {
+          const s = v.trim().toLowerCase();
+          if (tokens.has(s)) x[k] = (descriptor.value !== undefined ? descriptor.value : null);
+        }
+      }
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Split Age preview
+  if (descriptor.kind === 'split_age') {
+    const cols = ensureCols(baseCols, ['AgeFrom', 'AgeTo']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const v = String(x['Age'] ?? '');
+      let m1 = v.match(/^(\d+)-(\d+)$/);
+      let m2 = v.match(/^(\d+)\+$/);
+      if (m1) { x['AgeFrom'] = m1[1]; x['AgeTo'] = m1[2]; }
+      else if (m2) { x['AgeFrom'] = m2[1]; x['AgeTo'] = null; }
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
+
+  // Split FY preview
+  if (descriptor.kind === 'split_fy') {
+    const src = byLower.get('year') || 'Year';
+    const cols = ensureCols(baseCols, ['FYStart','FYEnd']);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const v = String(x[src] ?? '');
+      const m = v.match(/^\s*FY(\d{2})\/(\d{2})\s*$/i);
+      if (m) { x['FYStart'] = m[1]; x['FYEnd'] = m[2]; }
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
+
+  // Dedup preview
   if (descriptor.kind === 'dedup' && descriptor.column) {
-    const colLower = descriptor.column.toLowerCase();
-    // Resolve actual column case from first row keys
-    const cols = Object.keys(sampleRows[0] || {});
-    const byLower = new Map(cols.map((c) => [String(c).toLowerCase(), c]));
-    const resolved = byLower.get(colLower) || descriptor.column;
+    const resolved = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
     const seen = new Set();
     const out = [];
     for (const r of sampleRows) {
@@ -439,9 +717,277 @@ function previewForRuleCommand(descriptor, rows) {
       out.push(r);
       if (out.length >= 20) break;
     }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Normalize casing preview
+  if (descriptor.kind === 'normalize_case') {
+    const mode = descriptor.mode === 'upper' ? 'upper' : 'lower';
+    const out = sampleRows.slice(0, 20).map((r) => applyNormalize(r, mode));
+    return { columns: baseCols, rows: out };
+  }
+
+  // Standardize phone numbers preview
+  if (descriptor.kind === 'standardize_phone') {
+    const phoneColGuess = descriptor.column ? (byLower.get(descriptor.column.toLowerCase()) || descriptor.column) : (byLower.get('phone') || byLower.get('mobile') || byLower.get('tel'));
+    const col = phoneColGuess || baseCols.find((c) => /phone|mobile|tel/i.test(c)) || baseCols[0];
+    const out = sampleRows.slice(0, 20).map((r) => { const x = clone(r); x[col] = standardizePhone(x[col]); return x; });
+    return { columns: baseCols, rows: out };
+  }
+
+  // Split column into targets preview (supports delimiter, pattern, separators, auto-detect)
+  if (descriptor.kind === 'split' && descriptor.column && Array.isArray(descriptor.targets)) {
+    const src = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const targets = descriptor.targets;
+    const cols = ensureCols(baseCols, targets);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const text = String(x[src] ?? '');
+      let parts = [];
+      if (descriptor.delimiter) {
+        parts = text.split(descriptor.delimiter);
+      } else if (descriptor.pattern) {
+        try { const rx = new RegExp(descriptor.pattern, descriptor.flags || ''); const m = text.match(rx); parts = m ? m.slice(1) : []; } catch {}
+      } else if (Array.isArray(descriptor.separators) && descriptor.separators.length) {
+        for (const sep of descriptor.separators) {
+          try { const rx = new RegExp(sep); const p = text.split(rx); if (p.length >= targets.length) { parts = p; break; } }
+          catch { const p = text.split(String(sep)); if (p.length >= targets.length) { parts = p; break; } }
+        }
+      }
+      if (!parts || parts.length === 0) {
+        const auto = text.trim().split(/[\/_\-\|,\s]+/).filter(Boolean);
+        if (auto.length) parts = auto;
+      }
+      if ((!parts || parts.length === 0 || parts.length < targets.length) && (/^\s*fy/i.test(text) || String(src).toLowerCase().includes('year'))) {
+        const nums = (text.match(/\d+/g) || []).map((n) => n.length === 2 ? n : n.slice(-2));
+        if (nums.length >= 2) parts = nums;
+      }
+      for (let i = 0; i < targets.length; i++) x[targets[i]] = parts[i] ?? '';
+      return x;
+    });
     return { columns: cols, rows: out };
   }
-  return { columns: Object.keys(sampleRows[0] || {}), rows: sampleRows.slice(0, 20) };
+
+  // Merge sources into target preview
+  if (descriptor.kind === 'merge' && Array.isArray(descriptor.sources) && descriptor.target) {
+    const sources = descriptor.sources.map((s) => byLower.get(String(s).toLowerCase()) || s);
+    const target = descriptor.target;
+    const cols = ensureCols(baseCols, [target]);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      const vals = sources.map((s) => x[s]).filter((v) => v != null && v !== '');
+      x[target] = vals.join(' ');
+      return x;
+    });
+    return { columns: cols, rows: out };
+  }
+
+  // Filter rows preview
+  if (descriptor.kind === 'filter' && descriptor.condition) {
+    const out = [];
+    for (const r of sampleRows) {
+      if (!evalCondition(r, descriptor.condition)) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+  // Normalize casing in columns preview
+  if (descriptor.kind === 'normalize_case_in' && Array.isArray(descriptor.columns)) {
+    const mode = descriptor.mode === 'upper' ? 'upper' : 'lower';
+    const cols = descriptor.columns.map((c)=> byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r)=>{
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = mode==='upper' ? x[c].toUpperCase() : x[c].toLowerCase();
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Replace in columns preview
+  if (descriptor.kind === 'replace_in' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c)=> byLower.get(c.toLowerCase()) || c);
+    const re = new RegExp(descriptor.from, 'g');
+    const out = sampleRows.slice(0, 20).map((r)=>{
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = x[c].replace(re, descriptor.to);
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Map values preview
+  if (descriptor.kind === 'map_values' && descriptor.column && descriptor.mapping) {
+    const col = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const mp = descriptor.mapping;
+    const out = sampleRows.slice(0, 20).map((r)=>{ const x=clone(r); const v=x[col]; if (v!=null && mp[v]!==undefined) x[col]=mp[v]; return x; });
+    return { columns: baseCols, rows: out };
+  }
+  // Filter relation preview (drop rows matching A OP B)
+  if (descriptor.kind === 'filter_relation' && descriptor.left && descriptor.op && descriptor.right) {
+    const Lc = byLower.get(descriptor.left.toLowerCase()) || descriptor.left;
+    const Rc = byLower.get(descriptor.right.toLowerCase()) || descriptor.right;
+    const out = [];
+    for (const r of sampleRows) {
+      const lv = r[Lc], rv = r[Rc];
+      const A = typeof lv==='number' ? lv : Number(lv);
+      const B = typeof rv==='number' ? rv : Number(rv);
+      const L = (!Number.isNaN(A) ? A : String(lv ?? ''));
+      const R = (!Number.isNaN(B) ? B : String(rv ?? ''));
+      let cond=false; switch (descriptor.op) {
+        case '==': cond = (L==R); break; case '!=': cond = (L!=R); break;
+        case '>': cond = (L>R); break; case '>=': cond = (L>=R); break;
+        case '<': cond = (L<R); break; case '<=': cond = (L<=R); break;
+      }
+      if (!cond) out.push(r); if (out.length>=20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: required columns
+  if (descriptor.kind === 'filter_required' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = [];
+    for (const r of sampleRows) {
+      const missing = cols.some((c) => r[c] == null || r[c] === '');
+      if (!missing) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: missing percentage
+  if (descriptor.kind === 'filter_missing_pct') {
+    const thr = Number(descriptor.threshold || 50);
+    const out = [];
+    for (const r of sampleRows) {
+      const vals = Object.values(r || {});
+      const missing = vals.reduce((acc, v) => acc + ((v == null || v === '') ? 1 : 0), 0);
+      const pct = vals.length ? (missing / vals.length) * 100 : 0;
+      if (pct <= thr) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: numeric ranges (any violation drops)
+  if (descriptor.kind === 'filter_ranges' && Array.isArray(descriptor.ranges)) {
+    const out = [];
+    for (const r of sampleRows) {
+      let bad = false;
+      for (const rg of descriptor.ranges) {
+        const col = byLower.get(rg.column.toLowerCase()) || rg.column;
+        const vRaw = r[col];
+        if (vRaw == null || vRaw === '') { bad = true; break; }
+        const v = Number(vRaw);
+        if (Number.isNaN(v)) { bad = true; break; }
+        switch (rg.op) {
+          case '<': if (v < rg.value) bad = true; break;
+          case '<=': if (v <= rg.value) bad = true; break;
+          case '>': if (v > rg.value) bad = true; break;
+          case '>=': if (v >= rg.value) bad = true; break;
+        }
+        if (bad) break;
+      }
+      if (!bad) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: contains
+  if (descriptor.kind === 'filter_contains' && descriptor.column && descriptor.text) {
+    const col = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const needle = descriptor.ci ? String(descriptor.text).toLowerCase() : String(descriptor.text);
+    const out = [];
+    for (const r of sampleRows) {
+      const hay = String(r[col] ?? '');
+      const hit = descriptor.ci ? hay.toLowerCase().includes(needle) : hay.includes(needle);
+      if (!hit) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  // Filter: AND of two conditions
+  if (descriptor.kind === 'filter_and' && Array.isArray(descriptor.conditions)) {
+    const out = [];
+    for (const r of sampleRows) {
+      const both = descriptor.conditions.every((c) => evalCondition(r, c));
+      if (!both) out.push(r);
+      if (out.length >= 20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
+
+  return { columns: baseCols, rows: sampleRows.slice(0, 20) };
+}
+
+// ---------------- Data Profiling Helpers -------------------
+function buildBatchProfile(rows, columns, opts = {}) {
+  const limit = Math.min(opts.limit || 10000, 10000);
+  const sample = (rows || []).slice(0, limit);
+  const cols = Array.isArray(columns) && columns.length ? columns : Object.keys(sample[0] || {});
+  const rowCount = sample.length;
+  const profile = {
+    basis: rowCount,
+    columns: cols,
+    nullCounts: {},
+    distinctCounts: {},
+    duplicateCounts: {},
+    numericStats: {}, // col -> {count,min,max}
+    dateStats: {}, // col -> {min,max,futureCount}
+    regexInvalid: {}, // col -> {pattern, invalid}
+    topValues: {}, // col -> [{value,count}]
+    distinctValues: {}, // col -> [values] when small
+  };
+  const valueSets = new Map();
+  for (const c of cols) valueSets.set(c, new Map());
+  for (const r of sample) {
+    for (const c of cols) {
+      const v = r?.[c];
+      const isMissing = v === null || v === undefined || v === '';
+      if (isMissing) profile.nullCounts[c] = (profile.nullCounts[c] || 0) + 1;
+      // distinct/duplicate counts
+      const key = String(v);
+      const m = valueSets.get(c);
+      m.set(key, (m.get(key) || 0) + 1);
+      // numeric stats
+      if (typeof v === 'number') {
+        const st = profile.numericStats[c] || { count: 0, min: Number.POSITIVE_INFINITY, max: Number.NEGATIVE_INFINITY };
+        st.count += 1; st.min = Math.min(st.min, v); st.max = Math.max(st.max, v);
+        profile.numericStats[c] = st;
+      }
+      // date stats (basic)
+      if (v && (/(date|time|at)$/i.test(c) || /T\d\d:\d\d/.test(String(v)))) {
+        const d = new Date(v);
+        if (!isNaN(d.getTime())) {
+          const st = profile.dateStats[c] || { min: null, max: null, futureCount: 0 };
+          if (!st.min || d < new Date(st.min)) st.min = d.toISOString();
+          if (!st.max || d > new Date(st.max)) st.max = d.toISOString();
+          if (d.getTime() > Date.now()) st.futureCount += 1;
+          profile.dateStats[c] = st;
+        }
+      }
+      // email invalid
+      if (/email/i.test(c)) {
+        const ok = typeof v === 'string' && /.+@.+\..+/.test(v);
+        if (!isMissing && !ok) {
+          const cur = profile.regexInvalid[c] || { pattern: 'email', invalid: 0 };
+          cur.invalid += 1; profile.regexInvalid[c] = cur;
+        }
+      }
+    }
+  }
+  for (const c of cols) {
+    const m = valueSets.get(c);
+    let dups = 0; m.forEach((cnt) => { if (cnt > 1) dups += (cnt - 1); });
+    profile.distinctCounts[c] = m.size;
+    profile.duplicateCounts[c] = dups;
+    // compute top values and optionally full distinct list when small
+    const arr = Array.from(m.entries()).map(([value, count]) => ({ value, count }));
+    arr.sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)));
+    profile.topValues[c] = arr.slice(0, 50);
+    if (m.size <= 50) profile.distinctValues[c] = arr.map((x) => x.value);
+  }
+  return profile;
 }
 
 // ---------------- AI Rule Generator ------------------------
@@ -450,21 +996,188 @@ function previewForRuleCommand(descriptor, rows) {
  * Returns { name: string, definition: object }
  */
 async function generateRuleFromText(command, columns, accessToken) {
+  // Fast paths for common commands without model
+  const cols = Array.isArray(columns) ? columns : [];
+  const lowerCols = cols.map((c) => String(c).toLowerCase());
+  const resolveCol = (nameGuess, fallbackPattern) => {
+    if (nameGuess) {
+      const i = lowerCols.indexOf(String(nameGuess).toLowerCase());
+      if (i >= 0) return cols[i];
+    }
+    if (fallbackPattern) {
+      const idx = lowerCols.findIndex((c) => fallbackPattern.test(c));
+      if (idx >= 0) return cols[idx];
+    }
+    return null;
+  };
+  const t = String(command || '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  // Title-case X and Y; trim whitespace
+  let m = null;
+  // Split <col> into <a> and <b> using underscore/space/dash/hyphen/slash
+  m = t.match(/^\s*split\s+(.+?)\s+into\s+(.+?)\s*(?:[,/&+]\s*|\s+and\s+)\s*(.+?)\s+using\s+(underscore|space|dash|hyphen|slash)\s*$/i);
+  if (m) {
+    const src = resolveCol(m[1], null) || m[1].trim();
+    const a = m[2].trim(); const b = m[3].trim(); const how = m[4].toLowerCase();
+    const sep = how === 'underscore' ? '[_]+' : how === 'space' ? '\\s+' : how === 'slash' ? '/' : '[-_]+';
+    return { name: `Split ${src} into ${a}/${b}`, definition: { transforms: [ { name: 'split', column: src, separators: [sep], targets: [a,b] } ], checks: [], meta: { category: 'parsing' } } };
+  }
+  m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
+  if (m) {
+    const cols = m[1].split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return {
+      name: `Titlecase + trim ${cols.join(', ')}`,
+      definition: { transforms: [{ name: 'trim', columns: cols }, { name: 'titlecase', columns: cols }], checks: [], meta: { category: 'standardization' } }
+    };
+  }
+  // Title-case columns (no trim)
+  m = t.match(/^\s*title-?case\s+(.+?)\s*$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return {
+      name: `Titlecase ${colsList.join(', ')}`,
+      definition: { transforms: [{ name: 'titlecase', columns: colsList }], checks: [], meta: { category: 'standardization' } }
+    };
+  }
+  // Split Age into AgeFrom/AgeTo
+  if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
+    return {
+      name: 'Split Age into AgeFrom/AgeTo',
+      definition: { transforms: [
+        { name: 'split', column: 'Age', pattern: '^(\\\\d+)-(\\\\d+)$', targets: ['AgeFrom','AgeTo'] },
+        { name: 'split', column: 'Age', pattern: '^(\\\\d+)\\\\+$', targets: ['AgeFrom'] }
+      ], checks: [], meta: { category: 'parsing' } }
+    };
+  }
+  // Split FY Year
+  if (/^\s*split\s+fy\s+.*fystart.*fyend/i.test(t) || /split\s+.*year.*fystart.*fyend/i.test(t)) {
+    return {
+      name: 'Split FY into FYStart/FYEnd',
+      definition: { transforms: [
+        { name: 'split', column: 'Year', pattern: '^FY(\\\\d{2})\\\\/(\\\\d{2})$', targets: ['FYStart','FYEnd'] }
+      ], checks: [], meta: { category: 'parsing' } }
+    };
+  }
+  // Normalize empty/NULL/N/A cells to <value>
+  m = t.match(/normalize\s+.*(empty|null|n\/a).*to\s+([A-Za-z0-9_\-+\/ ]+)/i);
+  if (m) {
+    const val = m[2].trim();
+    return { name: `Normalize empties to ${val}`, definition: { transforms: [{ name: 'normalize_nulls', tokens: ["", "NULL", "N/A", "-"], toValue: val }], checks: [], meta: { category: 'normalization' } } };
+  }
+  if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
+    return { name: 'Normalize common empties to null', definition: { transforms: [{ name: 'normalize_nulls' }], checks: [], meta: { category: 'normalization' } } };
+  }
+  // Normalize casing to lower/upper in columns
+  m = t.match(/^\s*(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*,\s*/).map((s)=>s.trim()).filter(Boolean);
+    return { name: `Lowercase ${colsList.join(', ')}`, definition: { transforms: [{ name: 'lowercase', columns: colsList }], checks: [], meta: { category: 'standardization' } } };
+  }
+  m = t.match(/^\s*(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*,\s*/).map((s)=>s.trim()).filter(Boolean);
+    return { name: `Uppercase ${colsList.join(', ')}`, definition: { transforms: [{ name: 'uppercase', columns: colsList }], checks: [], meta: { category: 'standardization' } } };
+  }
+  // Drop/Remove/Delete rows missing A, B, or C
+  m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (!m) m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+with\s+missing\s+(.+?)\.?\s*$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { name: `Drop rows missing ${colsList.join(', ')}`, definition: { transforms: [], checks: [{ name: 'require_columns', columns: colsList, action: 'drop' }], meta: { category: 'completeness' } } };
+  }
+  // Drop rows with >X% empty fields
+  m = t.match(/^\s*drop\s+rows\s+with\s*>\s*(\d+)\s*%\s+empty/i);
+  if (m) {
+    return { name: `Drop rows with >${m[1]}% empty`, definition: { transforms: [], checks: [{ name: 'drop_if_missing_pct_gt', threshold: Number(m[1]) }], meta: { category: 'completeness' } } };
+  }
+  // Drop rows with Unit <= 0 or Amount < 1000
+  if (/^\s*drop\s+rows\s+with\s+unit\s*<=\s*0\s+or\s+amount\s*<\s*1000/i.test(t)) {
+    return { name: 'Drop invalid Unit/Amount', definition: { transforms: [], checks: [
+      { name: 'drop_if_null', columns: ['Unit','Amount'] },
+      { name: 'drop_if_out_of_range', column: 'Unit', min: 0.000001 },
+      { name: 'drop_if_out_of_range', column: 'Amount', min: 1000 }
+    ], meta: { category: 'accuracy' } } };
+  }
+  // Drop rows where Remark contains '...'
+  m = t.match(/^\s*drop\s+rows\s+where\s+remark\s+contains\s+['\"](.+?)['\"]/i);
+  if (m) {
+    return { name: `Drop rows where Remark contains ${m[1]}`, definition: { transforms: [], checks: [{ name: 'drop_if_pattern', column: 'Remark', pattern: m[1], flags: 'i' }], meta: { category: 'filter' } } };
+  }
+  // Drop rows where Business == Dealer and Remark == Discounted
+  if (/^\s*drop\s+rows\s+where\s+business\s*==\s*dealer\s+and\s+remark\s*==\s*discounted/i.test(t)) {
+    return { name: 'Drop Dealer & Discounted', definition: { transforms: [], checks: [
+      { name: 'drop_if_all', conditions: ["Business == 'Dealer'", "Remark == 'Discounted'"] }
+    ], meta: { category: 'filter' } } };
+  }
+  // Normalize casing in specific columns (lower/upper) e.g. "Normalize casing to lowercase in Business, Finished"
+  m = t.match(/^(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsSel = m[1].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    return { name: `Normalize to lowercase in ${colsSel.join(', ')}`, definition: { transforms: [{ name: 'lowercase', columns: colsSel }], checks: [], meta: { category: 'normalization' } } };
+  }
+  m = t.match(/^(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsSel = m[1].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    return { name: `Normalize to uppercase in ${colsSel.join(', ')}`, definition: { transforms: [{ name: 'uppercase', columns: colsSel }], checks: [], meta: { category: 'normalization' } } };
+  }
+  // Dedup by X keep latest/first
+  m = t.match(/dedup(?:e|licate)?\s+by\s+([^,]+?)(?:\s+keep\s+(first|latest|last))?$/i);
+  if (m) {
+    const col = resolveCol(m[1], null) || m[1].trim();
+    const keep = (m[2] || 'last').toLowerCase() === 'first' ? 'first' : 'last';
+    return { name: `Dedup by ${col} (${keep === 'last' ? 'latest' : 'first'})`, definition: { transforms: [], checks: [], meta: { type: 'dedup', keys: [col], keep } } };
+  }
+  // Normalize casing
+  if (/normalize\s+(?:case|casing).*lower/i.test(t)) {
+    return { name: 'Normalize casing to lower', definition: { transforms: [{ name: 'lowercase', columns: ['*'] }], checks: [], meta: { category: 'normalization' } } };
+  }
+  if (/normalize\s+(?:case|casing).*upper/i.test(t)) {
+    return { name: 'Normalize casing to upper', definition: { transforms: [{ name: 'uppercase', columns: ['*'] }], checks: [], meta: { category: 'normalization' } } };
+  }
+  // Standardize phone numbers
+  m = t.match(/standardize\s+phone\s+numbers?(?:\s+in\s+(.+))?/i);
+  if (m) {
+    const col = resolveCol(m[1], /(phone|mobile|tel)/i) || 'phone';
+    return { name: `Standardize phone in ${col}`, definition: { transforms: [{ name: 'standardize_phone', column: col }], checks: [], meta: { category: 'standardization' } } };
+  }
+  // Split Full Name into First/Last
+  m = t.match(/split\s+(.+?)\s+into\s+(.+?)\s*(?:[,/&+]\s*|\s+and\s+)\s*(.+)$/i);
+  if (m) {
+    const src = resolveCol(m[1], /(name|full)/i) || m[1].trim();
+    const a = m[2].trim();
+    const b = m[3].trim();
+    return { name: `Split ${src} into ${a}/${b}`, definition: { transforms: [{ name: 'split', column: src, delimiter: ' ', targets: [a, b] }], checks: [], meta: { category: 'parsing' } } };
+  }
+  // Merge A + B into C
+  m = t.match(/merge\s+(.+?)\s*\+\s*(.+?)\s+into\s+(.+)/i);
+  if (m) {
+    const a = resolveCol(m[1], null) || m[1].trim();
+    const b = resolveCol(m[2], null) || m[2].trim();
+    const target = m[3].trim();
+    return { name: `Merge ${a}+${b} into ${target}`, definition: { transforms: [{ name: 'merge', sources: [a, b], target, separator: ' ' }], checks: [], meta: { category: 'merge' } } };
+  }
+  // Filter out rows where <condition>
+  m = t.match(/filter\s+out\s+rows\s+where\s+(.+)/i);
+  if (m) {
+    const condition = m[1].trim();
+    return { name: `Filter: ${condition}`, definition: { transforms: [], checks: [{ name: 'drop_if', condition }], meta: { category: 'filter' } } };
+  }
+
+  // Model prompt for anything else (extended supported ops)
   const sys = `You convert short data quality commands into a strict JSON rule.
-Rules are stored and later executed by a simple engine that supports only:
-- transforms: trim, uppercase, lowercase, normalize_whitespace, replace{from,to}, map{column,mapping{}}, coalesce{column,values[]}
-- checks: regex{column,pattern}
-Everything else must go under meta as documentation, not executable logic.
-Return ONLY JSON. No markdown, no commentary.`;
+Rules are executed by an engine that supports:
+- transforms: trim, uppercase, lowercase, normalize_whitespace, replace{from,to,columns?}, map{column,mapping{}}, coalesce{column,values[]}, to_number{column}, strip_non_digits{column}, standardize_phone{column,countryCode?}, standardize_date{column,format?}, split{column,delimiter?|pattern?,targets[]}, merge{sources[],target,separator?}
+- checks: regex{column,pattern}, drop_if{condition}, drop_if_null{columns[]}, drop_if_zscore_gt{column,threshold}
+- meta: for dedup use { type: 'dedup', keys: [..], keep: 'first'|'last' }
+Return ONLY JSON with fields { name, definition }.`;
   const guidance = {
     columns: Array.isArray(columns) ? columns.slice(0, 60) : [],
     schema: {
       name: "string: concise rule name",
-      category: "dedup | enrichment | cross_field",
+      category: "dedup | standardization | normalization | parsing | merge | filter | enrichment | cross_field",
       definition: {
-        transforms: "optional array of supported transforms",
-        checks: "optional array of supported checks",
-        meta: "any extra details for unsupported logic like dedup keys or cross-field expressions",
+        transforms: "array of supported transforms (see list)",
+        checks: "array of supported checks (see list)",
+        meta: "extra details such as dedup keys",
       },
     },
     examples: [
@@ -481,27 +1194,19 @@ Return ONLY JSON. No markdown, no commentary.`;
         }
       },
       {
-        command: "enrich bank_name from bank_code mapping (001: BBL, 002: KTB)",
+        command: "normalize casing to lowercase",
         output: {
-          name: "Enrich bank_name from bank_code",
-          category: "enrichment",
-          definition: {
-            transforms: [{ name: "map", column: "bank_code", mapping: { "001": "BBL", "002": "KTB" } }],
-            checks: [],
-            meta: { writes: [{ from: "bank_code", to: "bank_name" }] }
-          }
+          name: "Normalize to lowercase",
+          category: "normalization",
+          definition: { transforms: [{ name: "lowercase", columns: ["*"] }], checks: [], meta: {} }
         }
       },
       {
-        command: "amount must be > 0 when status is ACTIVE",
+        command: "filter out rows where Amount < 0",
         output: {
-          name: "Amount positive when ACTIVE",
-          category: "cross_field",
-          definition: {
-            transforms: [],
-            checks: [],
-            meta: { expression: "IF status == 'ACTIVE' THEN amount > 0", columns: ["status","amount"] }
-          }
+          name: "Filter: Amount < 0",
+          category: "filter",
+          definition: { transforms: [], checks: [{ name: "drop_if", condition: "Amount < 0" }], meta: {} }
         }
       }
     ]
@@ -649,7 +1354,7 @@ function DomainEditor({ domain, onClose, onSaved, accessToken }) {
   );
 }
 
-function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
+function MessageBubble({ msg, rulesets, setRulesets, kind, domain, onApproveRule, onRejectRule }) {
   const isUser = msg.role === "user";
   const bubbleCls = isUser
     ? "bg-neutral-200 text-neutral-900"
@@ -678,6 +1383,15 @@ function MessageBubble({ msg, rulesets, setRulesets, kind, domain }) {
             setRulesets={setRulesets}
             domain={domain}
           />
+        )}
+        {msg.type === "rule_proposal" && msg.payload && (
+          <div>
+            <div className="text-sm font-medium mb-2">Save this rule?</div>
+            <div className="flex gap-2">
+              <button className="px-3 py-1.5 rounded bg-emerald-600 text-white text-xs" onClick={() => onApproveRule?.(msg)}>Approve</button>
+              <button className="px-3 py-1.5 rounded bg-neutral-300 text-neutral-800 text-xs" onClick={() => onRejectRule?.(msg)}>Reject</button>
+            </div>
+          </div>
         )}
         {msg.type === "preview" && msg.payload && (
           <PreviewTable payload={msg.payload} />
@@ -1476,7 +2190,7 @@ function RulesPanel({ domainId, onClose }) {
   };
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
-      <div className="bg-white h-full w-[420px] border-l" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white h-full w-[420px] border-l flex flex-col overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b flex items-center justify-between"><div className="font-medium">Rules</div><button onClick={onClose}>✕</button></div>
         {loading ? (
           <div className="p-4 text-neutral-500">Loading…</div>
@@ -1529,15 +2243,16 @@ function VersionsPanel({ domainId, onClose }) {
     const res = await fetch(`/api/domains/${domainId}/preview?limit=50`, { headers: { Authorization: `Bearer ${token}` } });
     if (res.ok) setPreview(await res.json());
   };
+  
   const columns = preview && preview.length ? Object.keys(preview[0]) : [];
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
-      <div className="bg-white h-full w-[900px] border-l" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white h-full w-[900px] border-l flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b flex items-center justify-between"><div className="font-medium">Versions</div><div className="flex gap-2"><button className="px-3 py-1 rounded border" onClick={loadPreview}>Preview</button><button className="px-3 py-1 rounded bg-neutral-900 text-white" onClick={doClean}>Clean</button><button onClick={onClose} className="ml-2">✕</button></div></div>
         {loading ? (
           <div className="p-4 text-neutral-500">Loading…</div>
         ) : (
-          <div className="p-3 space-y-2">
+          <div className="flex-1 overflow-auto p-3 space-y-2">
             {versions.map((v) => (
               <div key={v.id} className="rounded-lg border border-neutral-300 p-3 bg-neutral-50">
                 <div className="flex items-center justify-between">
@@ -1774,6 +2489,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
     ];
   });
   const [currentPrompt, setCurrentPrompt] = useState("");
+  const [slashIndex, setSlashIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [pendingId, setPendingId] = useState(null);
   const [currentBatch, setCurrentBatch] = useState(null);
@@ -1784,6 +2500,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   const [serverRuleCount, setServerRuleCount] = useState(null);
   const [showRules, setShowRules] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [serverTasks, setServerTasks] = useState([]);
+  const [latestStats, setLatestStats] = useState(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -1795,6 +2513,51 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   }, [messages, storageKey]);
 
   const tasksOfKind = useMemo(() => tasks.filter((t) => t.kind === kind), [tasks, kind]);
+  const fetchServerTasks = React.useCallback(async () => {
+    try {
+      if (!domainId) { setServerTasks([]); return; }
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!token) { setServerTasks([]); return; }
+      const url = `/api/tasks?domain_id=${encodeURIComponent(domainId)}&kind=${encodeURIComponent(kind)}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const list = res.ok ? await res.json() : [];
+      setServerTasks(Array.isArray(list) ? list : []);
+    } catch { setServerTasks([]); }
+  }, [domainId, kind]);
+
+  // Load server tasks on domain change
+  useEffect(() => { fetchServerTasks(); }, [fetchServerTasks]);
+
+  // Load latest-version stats for the active domain (server mode)
+  useEffect(() => { (async () => {
+    try {
+      if (!domainId) { setLatestStats(null); return; }
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!token) { setLatestStats(null); return; }
+      const res = await fetch(`/api/domains/${domainId}/version/latest/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { setLatestStats(null); return; }
+      const stats = await res.json();
+      setLatestStats({ rowCount: Number(stats?.rowCount || 0), totalAmount: Number(stats?.totalAmount || 0) });
+    } catch { setLatestStats(null); }
+  })(); }, [domainId, serverTasks]);
+
+  const items = useMemo(() => {
+    if (domainId) {
+      return (serverTasks || []).map((t) => ({
+        id: t.id,
+        isServer: true,
+        params: t.params || {},
+        kind: t.kind,
+        fileName: t.params?.fileName || 'Task',
+        createdAt: t.created_at,
+        rowCount: t.params?.rowCount || 0,
+        totalAmount: t.params?.totalAmount || 0,
+        status: t.status,
+        endpoint: t.params?.endpoint || null,
+      }));
+    }
+    return tasksOfKind;
+  }, [domainId, serverTasks, tasksOfKind]);
 
   const headerName = domainId ? domain : (kind === "credit" ? "Customers" : "Products");
   const HeaderIcon = domainId ? Package : (kind === "credit" ? Users : Package);
@@ -1938,40 +2701,76 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
       ]);
       return;
     }
-    const task = {
-      id: uid("task"),
-      kind,
-      fileName: currentBatch.fileName,
-      createdAt: new Date().toISOString(),
-      rowCount: currentBatch.rowCount,
-      totalAmount: currentBatch.totalAmount,
-      status: "initiated",
-      endpoint: null,
-    };
-    setTasks((t) => [task, ...t]);
-    setMessages((m) => [
-      ...m,
-      { role: "assistant", type: "text", content: `Task "${currentBatch.fileName}" initiated for ${currentBatch.rowCount} records.` },
-    ]);
-    setCurrentBatch(null);
+    if (domainId) {
+      try {
+        const token = (await supabase.auth.getSession()).data?.session?.access_token;
+        if (!token) {
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'You are not signed in. Please sign in to create a server task.' }]);
+          return;
+        }
+        const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+        const body = {
+          domain_id: domainId,
+          kind,
+          status: 'initiated',
+          params: {
+            fileName: currentBatch.fileName,
+            rowCount: currentBatch.rowCount,
+            totalAmount: currentBatch.totalAmount,
+          },
+        };
+        const res = await fetch('/api/tasks', { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!res.ok) {
+          let msg = 'Create task failed';
+          try { msg = (await res.json()).error || msg; } catch {}
+          setMessages((m) => [...m, { role: 'assistant', type: 'text', content: msg }]);
+          return;
+        }
+        await fetchServerTasks();
+        // Trigger server-side clean so enabled rules run and snapshot is created (no chat message)
+        try {
+          await fetch(`/api/domains/${domainId}/clean`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+        } catch {}
+      } catch (e) {
+        setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Create task error: ${e.message || e}` }]);
+        return;
+      }
+    } else {
+      const task = {
+        id: uid("task"),
+        kind,
+        fileName: currentBatch.fileName,
+        createdAt: new Date().toISOString(),
+        rowCount: currentBatch.rowCount,
+        totalAmount: currentBatch.totalAmount,
+        status: "initiated",
+        endpoint: null,
+      };
+      setTasks((t) => [task, ...t]);
+    }
+    // no chat message for task initiation
     addToast("Task initiated");
   };
 
   const ask = async () => {
     if (!currentPrompt.trim()) return;
-    const question = currentPrompt.trim();
+    let inputText = currentPrompt.trim();
+    let forcedMode = null; // 'rule' | 'ask' | null
+    if (/^\/rule\b/i.test(inputText)) { forcedMode = 'rule'; inputText = inputText.replace(/^\/rule\b\s*/i, ''); }
+    else if (/^\/ask\b/i.test(inputText)) { forcedMode = 'ask'; inputText = inputText.replace(/^\/ask\b\s*/i, ''); }
+    const question = inputText;
     setCurrentPrompt("");
-    setMessages((m) => [...m, { role: "user", type: "text", content: question }]);
+    setMessages((m) => [...m, { role: "user", type: "text", content: (forcedMode ? `/${forcedMode} ` : '') + question }]);
 
     try {
       setBusy(true);
       const thinkId = uid("thinking");
       setPendingId(thinkId);
       setMessages((m) => [...m, { role: 'assistant', type: 'thinking', id: thinkId }]);
-      // Try inline rule command (e.g., "Dedup by <Column>")
+      // Try rule command (forced via /rule or auto-detected)
       try {
-        const cmd = detectRuleCommand(question);
-        if (cmd) {
+        const cmd = forcedMode === 'ask' ? null : detectRuleCommand(question);
+        if (forcedMode === 'rule' || cmd) {
           const token = (await supabase.auth.getSession()).data?.session?.access_token;
           let cols = currentBatch?.rawColumns || Object.keys((currentBatch?.rows || [])[0] || {});
           if ((!cols || cols.length === 0) && domainId && token) {
@@ -1984,7 +2783,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             } catch {}
           }
           const out = await generateRuleFromText(question, cols || [], token);
-          if (domainId && token) {
+          if (forcedMode !== 'rule' && domainId && token) {
             const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name: out.name, definition: out.definition }) });
             if (!res.ok) throw new Error((await res.json()).error || 'Create rule failed');
             setServerRuleCount((c) => (c == null ? 1 : c + 1));
@@ -2003,21 +2802,42 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             } catch {}
           }
           if (previewRowsSrc && previewRowsSrc.length) {
-            const pv = previewForRuleCommand(cmd, previewRowsSrc);
+          const desc = cmd || detectRuleCommand(question) || null;
+          const pv = desc ? previewForRuleCommand(desc, previewRowsSrc) : { columns: Object.keys(previewRowsSrc[0] || {}), rows: previewRowsSrc.slice(0, 20) };
             setMessages((m) => [...m, { role: 'assistant', type: 'preview', content: 'Preview', payload: pv }]);
+          }
+          if (forcedMode === 'rule') {
+            const proposalId = uid('rule');
+            setMessages((m) => [
+              ...m,
+              { role: 'assistant', type: 'rule_proposal', id: proposalId, payload: { name: out.name, definition: out.definition } },
+            ]);
           }
           return;
         }
       } catch {}
-      // Try local QA first for quick, offline answers
-      const local = answerLocalQuestion(question, currentBatch);
-      if (local) {
-        setMessages((m) => m.filter((mm) => mm.id !== thinkId));
-        setMessages((m) => [...m, { role: "assistant", type: "text", content: local }]);
-        return;
+      // Skip local QA; build profiling context and route to LLM
+      let ctxRows = currentBatch?.rawRows || currentBatch?.rows || [];
+      let ctxCols = currentBatch?.rawColumns || Object.keys((currentBatch?.rows || [])[0] || {});
+      if ((!ctxRows || ctxRows.length === 0) && domainId) {
+        try {
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          if (token) {
+            const pr = await fetch(`/api/domains/${domainId}/preview?limit=200`, { headers: { Authorization: `Bearer ${token}` } });
+            if (pr.ok) {
+              const arr = await pr.json();
+              ctxRows = Array.isArray(arr) ? arr : [];
+              ctxCols = Object.keys(ctxRows[0] || {});
+            }
+          }
+        } catch {}
       }
+      const profile = buildBatchProfile(ctxRows, ctxCols, { limit: 5000 });
       const ctx = {
         rulesets,
+        columns: ctxCols,
+        profile,
+        sampleRows: ctxRows.slice(0, 20),
         lastBatch: currentBatch
           ? {
               fileName: currentBatch.fileName,
@@ -2025,7 +2845,6 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
               totalAmount: currentBatch.totalAmount,
               issues: currentBatch.issues,
               ruleResults: currentBatch.ruleResults,
-              sampleRows: currentBatch.rows.slice(0, 20),
               columns: currentBatch.rawColumns || Object.keys((currentBatch.rows || [])[0] || {}),
             }
           : null,
@@ -2056,15 +2875,63 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
   const assignEndpoint = () => {
     if (!selectedTask || !selectedEndpoint) return;
     const id = selectedTask.id;
-    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, endpoint: selectedEndpoint, status: "connecting" } : t)));
-    setSelectedTask(null);
-    setSelectedEndpoint("");
-    setTimeout(() => {
-      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "transferring" } : t)));
-    }, 3000);
-    setTimeout(() => {
-      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "completed" } : t)));
-    }, 6000);
+    const doLocal = !domainId || !selectedTask?.isServer;
+    if (doLocal) {
+      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, endpoint: selectedEndpoint, status: "connecting" } : t)));
+      setSelectedTask(null);
+      setSelectedEndpoint("");
+      setTimeout(() => {
+        setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "transferring" } : t)));
+      }, 3000);
+      setTimeout(() => {
+        setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status: "completed" } : t)));
+      }, 6000);
+    } else {
+      (async () => {
+        try {
+          const token = (await supabase.auth.getSession()).data?.session?.access_token;
+          const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+          // connecting
+          await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'connecting', params: { ...(selectedTask.params || {}), endpoint: selectedEndpoint } }) });
+          await fetchServerTasks();
+          setSelectedTask(null);
+          setSelectedEndpoint("");
+          setTimeout(async () => {
+            await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'transferring' }) });
+            await fetchServerTasks();
+          }, 3000);
+          setTimeout(async () => {
+            await fetch(`/api/tasks/${id}`, { method: 'PUT', headers, body: JSON.stringify({ status: 'completed' }) });
+            await fetchServerTasks();
+          }, 6000);
+        } catch (e) {
+          console.error('update server task failed', e);
+        }
+      })();
+    }
+  };
+
+  // Rule proposal handlers
+  const approveRuleProposal = async (proposalMsg) => {
+    try {
+      const token = (await supabase.auth.getSession()).data?.session?.access_token;
+      if (!domainId || !token) {
+        setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'No active server domain to save this rule.' }]);
+        return;
+      }
+      const body = { name: proposalMsg?.payload?.name, definition: proposalMsg?.payload?.definition };
+      const res = await fetch(`/api/domains/${domainId}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error((await res.json()).error || 'Create rule failed');
+      setServerRuleCount((c) => (c == null ? 1 : c + 1));
+      setMessages((m) => m.filter((mm) => mm !== proposalMsg));
+      setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Rule "${body.name}" saved.` }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: 'assistant', type: 'text', content: `Save rule failed: ${e.message || e}` }]);
+    }
+  };
+  const rejectRuleProposal = (proposalMsg) => {
+    setMessages((m) => m.filter((mm) => mm !== proposalMsg));
+    setMessages((m) => [...m, { role: 'assistant', type: 'text', content: 'Rule discarded.' }]);
   };
 
   return (
@@ -2137,6 +3004,8 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
               setRulesets={setRulesets}
               kind={kind}
               domain={domain}
+              onApproveRule={approveRuleProposal}
+              onRejectRule={rejectRuleProposal}
             />
           ))}
           <div className="text-center text-xs text-neutral-600 pt-6">Drop an Excel/CSV anywhere above to import</div>
@@ -2147,11 +3016,68 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
           <div className="relative">
             <textarea
               className="w-full bg-neutral-100 border border-neutral-300 rounded-xl text-lg resize-none h-28 px-3 pt-2 pb-14 pr-20 pl-10"
-              placeholder="Ask about the data, rules, or validation results..."
+              placeholder="Type /ask to analyze or /rule to create a rule…"
               value={currentPrompt}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); } }}
-              onChange={(e) => setCurrentPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                const showSlash = /^\/[a-z]*$/i.test(currentPrompt);
+                if (showSlash) {
+                  // Slash menu navigation
+                  const base = [
+                    { key: '/ask' },
+                    { key: '/rule' },
+                  ];
+                  const q = currentPrompt.slice(1).toLowerCase();
+                  const items = base.filter((it) => it.key.slice(1).startsWith(q));
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex((i) => Math.min(i + 1, Math.max(items.length - 1, 0))); return; }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex((i) => Math.max(i - 1, 0)); return; }
+                  // Space should accept current token and close suggestions
+                  if (e.key === ' ') {
+                    // Let space insert; onChange will make pattern not match so suggestions close
+                    return;
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    // If only slash or partial, accept selected suggestion; else submit as normal
+                    const onlySlash = /^\/(?:a|ask|r|rule)?$/i.test(currentPrompt.trim());
+                    if (onlySlash) {
+                      e.preventDefault();
+                      const pick = items[Math.min(slashIndex, Math.max(items.length - 1, 0))] || items[0] || base[0];
+                      setCurrentPrompt(pick.key + ' ');
+                      setSlashIndex(0);
+                      return;
+                    }
+                  }
+                }
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+              }}
+              onChange={(e) => { setCurrentPrompt(e.target.value); if (!e.target.value.startsWith('/')) setSlashIndex(0); }}
             />
+            {/* Slash suggestions */}
+            {/^\/[a-z]*$/i.test(currentPrompt) && (
+              <div className="absolute left-3 bottom-[8.25rem] w-64 bg-white border border-neutral-300 rounded-lg shadow z-10">
+                {(() => {
+                  const base = [
+                    { key: '/ask' },
+                    { key: '/rule' },
+                  ];
+                  const q = currentPrompt.slice(1).toLowerCase();
+                  const items = base.filter((it) => it.key.slice(1).startsWith(q));
+                  const list = items.length ? items : base;
+                  return (
+                    <ul className="py-1">
+                      {list.map((it, idx) => (
+                        <li
+                          key={it.key}
+                          onMouseDown={(e) => { e.preventDefault(); setCurrentPrompt(it.key + ' '); setSlashIndex(0); }}
+                          className={`px-3 py-2 text-sm cursor-pointer ${idx === Math.min(slashIndex, list.length - 1) ? 'bg-neutral-100' : ''}`}
+                        >
+                          <span className="font-mono text-neutral-700">{it.key}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
+              </div>
+            )}
             <div className="absolute left-2 bottom-2">
               <label>
                 <input
@@ -2179,7 +3105,7 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
                 <Send size={16} />
               </button>
               <button
-                disabled={busy}
+                disabled={!currentBatch}
                 onClick={submitBatch}
                 className="p-2 rounded-lg text-emerald-600 hover:bg-neutral-200 hover:text-emerald-500 disabled:opacity-50"
                 aria-label="Task"
@@ -2203,11 +3129,11 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
             <Package size={18} className="text-neutral-600" />
             <div className="font-medium">Data Provider Monitoring</div>
           </div>
-          {tasksOfKind.length === 0 ? (
+          {items.length === 0 ? (
             <div className="p-4 text-sm text-neutral-500">No tasks yet. Upload a file to start.</div>
           ) : (
             <ul className="p-2 space-y-2">
-              {tasksOfKind.map((t) => (
+              {items.map((t) => (
                 <li key={t.id} className="p-3 bg-neutral-100 rounded-xl border border-neutral-200">
                   <div className="flex items-center justify-between gap-2">
                     <div
@@ -2224,8 +3150,42 @@ function TransferChat({ domain, domainId = null, kind, rulesets, setRulesets, ta
                   <div className="text-xs text-neutral-500 mt-1">
                     {new Date(t.createdAt).toLocaleString()} · {t.rowCount} rows · Total {t.totalAmount.toLocaleString()}
                   </div>
+                  {domainId && latestStats && (
+                    <div className="text-xs text-neutral-500 mt-1">
+                      Latest version: {latestStats.rowCount} rows · Total {latestStats.totalAmount.toLocaleString()}
+                    </div>
+                  )}
                   {t.endpoint && (
                     <div className="text-xs text-neutral-500 mt-1 truncate">API: {t.endpoint}</div>
+                  )}
+                  {domainId && (
+                    <div className="mt-2 flex justify-start">
+                      <button
+                        className="px-2 py-1 rounded-md bg-neutral-200 border border-neutral-300 text-xs flex items-center gap-1"
+                        onClick={async () => {
+                          try {
+                            const token = (await supabase.auth.getSession()).data?.session?.access_token;
+                            const res = await fetch(`/api/domains/${domainId}/version/latest/export.csv`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+                            if (!res.ok) throw new Error('Download failed');
+                            const blob = await res.blob();
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            const base = (t.fileName || 'data').replace(/\.[^.]+$/, '');
+                            a.href = url;
+                            a.download = `${base}_latest.csv`;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            URL.revokeObjectURL(url);
+                          } catch (e) {
+                            addToast?.(e.message || 'Download failed');
+                          }
+                        }}
+                        title="Download latest version as CSV"
+                      >
+                        <Download size={14} /> Download CSV
+                      </button>
+                    </div>
                   )}
                   {t.status !== "completed" && (
                     <div className="mt-2 flex justify-end">

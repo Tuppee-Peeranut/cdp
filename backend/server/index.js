@@ -5,6 +5,7 @@ import openaiProxy from './openaiProxy.js';
 import { authorize } from './auth/supabaseAuth.js';
 import superAdminRoutes from './auth/superAdminRoutes.js';
 import domainsRoutes from './domainsRoutes.js';
+import tasksRoutes from './tasksRoutes.js';
 import { supabaseAdmin } from './supabaseClient.js';
 
 const app = express();
@@ -13,6 +14,7 @@ app.use(express.json());
 app.post('/api/chat', authorize(['admin', 'user']), openaiProxy);
 app.use('/api/superadmin', superAdminRoutes);
 app.use('/api/domains', domainsRoutes);
+app.use('/api/tasks', tasksRoutes);
 
 // Ensure a storage bucket exists (e.g., for profile avatars)
 app.post('/api/storage/ensure-bucket', authorize(['admin', 'user']), async (req, res) => {

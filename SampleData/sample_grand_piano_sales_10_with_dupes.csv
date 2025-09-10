@@ -1,0 +1,26 @@
+Year,Month,Type,Model,Finished,Customer name,Business,Sold by,Remark,Unit,Amount,Type of customers,Purpose,Gender,Age
+FY24/25,06_September,Grand,GB1K,PE,Walker and Sons,Music School,Dealer B,Discounted,2,30000,General customer,Display,Female,41-50
+FY22/23,12_March,Premium Grand,C3X,WHPC,Christopher Jones,Dealer,Yamaha HQ,Urgent,1,20000,Yamaha student,Business,Male,31-40
+FY21/22,09_December,Baby Grand,C3X,WHPC,Morgan & Weber,Music School,, ,3,30000,Display,Hobby,Female,20-30
+FY22/23,01_April,Hybrid,S7X,WHPC,Marcus Martinez,Dealer,,Discounted,3,30000,Project,Business,Male,31-40
+FY23/24,05_August,Premium Grand,214VC Secession,PWH,Harris-Robinson,Private,Yamaha HQ,Discounted,3,40000,Project,Decoration,Male,31-40
+FY22/23,11_February,Hybrid,C6X,WHPC,King-Jones,,,VIP,3,20000,Project,Entertainment,Female,31-40
+FY25/26,05_August,Grand,C5X,WHPC,,Dealer,,Discounted,2,,Display,School equipment,Female,41-50
+FY25/26,10_January,Grand,GC1,WHPC,Gallagher LLC,Dealer,Dealer A,,3,10000,Yamaha student,Decoration,,20-30
+FY22/23,03_June,Grand,GB1K,PE,Walker and Sons,Music School,Dealer B,Urgent,2,30000,General customer,Display,Female,
+FY22/23,11_February,Hybrid,C6X,WHPC,King-Jones Jame,,,VIP,3,-50000,Project,Entertainment,Female,20-30
+FY24/25,04_July,Grand,DC7X,PE,,Private,Dealer A, ,1,15000,General customer,Education,Male,41-50
+FY24/25,07_October,Grand,DC7X,PE,Null Amount Co,Private,Dealer A,ok,1,,General customer,Education,Female,31-40
+FY24/25,08_November,Grand,DC7X,PE,Low Amount Co,Private,Dealer A,ok,1,500,General customer,Education,Male,31-40
+FY24/25,09_December,Grand,DC7X,PE,Unit Zero Co,Private,Dealer A,ok,0,5000,General customer,Education,Female,31-40
+FY24/25,10_January,Grand,DC7X,PE,Dealer Discount,Dealer,Dealer A,Discounted,1,12000,General customer,Education,Male,31-40
+FY24/25,11_February,Grand,DC7X,PE,Contains VIP Inc,Private,Dealer A,Very VIP Client,1,12000,General customer,Education,Female,31-40
+FY24/25,12_March,Grand,DC7X,PE,Relation Bad Co,Private,Dealer A,ok,5,4,General customer,Education,Male,31-40
+FY24/25,01_April,Grand,DC7X,PE,Allowed Gender Co,Private,Dealer A,ok,1,12000,General customer,Education,Female,41-50
+FY24/25,02_May,Grand,DC7X,PE,Invalid Gender Co,Private,Dealer A,ok,1,12000,General customer,Education,LES,41-50
+FY24/25,03_June,Grand,DC7X,PE,Outlier Amount Co,Private,Dealer A,ok,1,500000,General customer,Education,Male,41-50
+FY24/25,05_August,Grand,MODEL_DUP,PE,Dup Customer,Private,Dealer A,ok,1,12000,General customer,Education,Male,31-40
+FY24/25,06_September,Grand,MODEL_DUP,PE,Dup Customer,Private,Dealer A,ok-later,1,13000,General customer,Education,Female,31-40
+FY24/25,07_October,Grand,MODEL_ONLY_DUP,PE,Another Name,Private,Dealer A,ok,1,14000,General customer,Education,Male,31-40
+FY24/25,08_November,Grand,MODEL_ONLY_DUP,PE,Third Name,Private,Dealer A,ok,1,15000,General customer,Education,Female,31-40
+FY24/25,03_June,Grand,DC7X,PE,Trim whitespace Business , Private ,Dealer A,ok,1,12000,General customer,Education,Female,41-50

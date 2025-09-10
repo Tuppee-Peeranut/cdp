@@ -6,6 +6,8 @@
     "backend"
   ],
   "scripts": {
+    "setup:env": "node scripts/ensure-env.js",
+    "seed:superadmin": "npm run seed:superadmin --workspace backend",
     "dev": "concurrently -n FRONTEND,BACKEND -c magenta,cyan \"npm:dev --workspace frontend\" \"npm:dev --workspace backend\"",
     "build": "npm run build --workspace frontend",
     "start": "npm run start --workspace backend",
