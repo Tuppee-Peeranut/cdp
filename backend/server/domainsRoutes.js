@@ -464,6 +464,13 @@ router.post('/:id/clean', async (req, res) => {
             if (!Number.isNaN(num)) out[col] = num;
           }
         }
+        if (def.name === 'to_abs') {
+          const col = def.column;
+          if (col && out[col] != null) {
+            const raw = typeof out[col] === 'number' ? out[col] : Number(String(out[col]).replace(/[\,\s]/g, ''));
+            if (!Number.isNaN(raw)) out[col] = Math.abs(raw);
+          }
+        }
         if (def.name === 'to_boolean') {
           const col = def.column;
           const fmt = (def.format || 'boolean').toLowerCase(); // 'boolean' | 'yesno' | 'yn' | '10'
@@ -523,7 +530,7 @@ router.post('/:id/clean', async (req, res) => {
             let parts = [];
             if (def.delimiter) parts = String(out[src]).split(def.delimiter);
             else if (def.pattern) {
-              try { const rx = new RegExp(def.pattern); const m = String(out[src]).match(rx); parts = m ? m.slice(1) : []; } catch {}
+              try { const rx = new RegExp(def.pattern, def.flags || ''); const m = String(out[src]).match(rx); parts = m ? m.slice(1) : []; } catch {}
             }
             for (let i = 0; i < targets.length; i++) {
               out[targets[i]] = parts[i] ?? '';
@@ -863,11 +870,17 @@ router.post('/:id/clean', async (req, res) => {
     const toDelete = new Set(filterDeletes);
     const dedupRemovedByRule = new Map();
 
+    const stripQuotes = (s) => {
+      if (typeof s !== 'string') return s;
+      const trimmed = s.trim();
+      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1);
+      return s;
+    };
     if (dedupRules.length && Array.isArray(rows) && rows.length) {
       for (const r of dedupRules) {
         const meta = r.definition?.meta || {};
         const keep = (meta.keep || 'last').toString().toLowerCase(); // 'first' | 'last'
-        const keys = (meta.keys || []).map((k) => resolveCol(k));
+        const keys = (meta.keys || []).map((k) => resolveCol(stripQuotes(k)));
         // group by computed key
         const groups = new Map(); // key -> { keepRow, others[] }
         for (const row of rows) {
@@ -926,6 +939,7 @@ router.post('/:id/clean', async (req, res) => {
           .in('key_hash', chunk);
         if (delErr) return res.status(400).json({ error: `filter delete failed: ${delErr.message}` });
       }
+      changed += keys.length;
     }
 
     // Apply transforms only to rows that remain after deletions/dedup
