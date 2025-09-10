@@ -528,9 +528,37 @@ router.post('/:id/clean', async (req, res) => {
           const targets = Array.isArray(def.targets) ? def.targets : [];
           if (src && targets.length && typeof out[src] === 'string') {
             let parts = [];
-            if (def.delimiter) parts = String(out[src]).split(def.delimiter);
+            const value = String(out[src] ?? '');
+            // 1) Explicit delimiter
+            if (def.delimiter) parts = value.split(def.delimiter);
+            // 2) Explicit pattern (capture groups)
             else if (def.pattern) {
-              try { const rx = new RegExp(def.pattern, def.flags || ''); const m = String(out[src]).match(rx); parts = m ? m.slice(1) : []; } catch {}
+              try { const rx = new RegExp(def.pattern, def.flags || ''); const m = value.match(rx); parts = m ? m.slice(1) : []; } catch {}
+            }
+            // 3) Separators list: try each until one yields >= targets
+            if ((!parts || parts.length === 0) && Array.isArray(def.separators) && def.separators.length) {
+              for (const sep of def.separators) {
+                try {
+                  const rx = new RegExp(sep);
+                  const p = value.split(rx);
+                  if (p.length >= targets.length) { parts = p; break; }
+                } catch {
+                  // treat as literal
+                  const p = value.split(String(sep));
+                  if (p.length >= targets.length) { parts = p; break; }
+                }
+              }
+            }
+            // 4) Auto-detect: split by common separators (/, -, _, |, comma, whitespace)
+            if (!parts || parts.length === 0) {
+              const auto = value.trim().split(/[\/-_|,\s]+/).filter(Boolean);
+              if (auto.length) parts = auto;
+            }
+            // 5) FY-friendly fallback: if column suggests fiscal year or value starts with FY, extract two numeric tokens
+            if ((!parts || parts.length === 0 || parts.length < targets.length) &&
+                (String(src).toLowerCase().includes('year') || /^\s*fy/i.test(value))) {
+              const nums = (value.match(/\d+/g) || []).map((n) => n.length === 2 ? n : n.slice(-2));
+              if (nums.length >= 2) parts = nums;
             }
             for (let i = 0; i < targets.length; i++) {
               out[targets[i]] = parts[i] ?? '';
@@ -898,11 +926,11 @@ router.post('/:id/clean', async (req, res) => {
             const a = new Date(cur.keepRow?.updated_at || 0).getTime();
             const b = new Date(row?.updated_at || 0).getTime();
             if (keep === 'first') {
-              // older wins
-              if (b < a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
+              // older (or equal) wins
+              if (b <= a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
             } else {
-              // last: newer wins
-              if (b > a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
+              // last: newer (or equal) wins
+              if (b >= a) { cur.others.push(cur.keepRow); cur.keepRow = row; } else { cur.others.push(row); }
             }
           }
         }

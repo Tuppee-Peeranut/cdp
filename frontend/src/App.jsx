@@ -411,6 +411,13 @@ function detectRuleCommand(text) {
   if (!text) return null;
   const t = String(text).replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
   let m = null;
+  // Split <col> into <a> and <b> using underscore/space/dash
+  m = t.match(/^\s*split\s+([A-Za-z0-9_ .-]+)\s+into\s+([A-Za-z0-9_ .-]+)\s*(?:[,/&+]\s*|\s+and\s+)\s*([A-Za-z0-9_ .-]+)\s+using\s+(underscore|space|dash|hyphen|slash)\s*$/i);
+  if (m) {
+    const col = m[1].trim(); const a = m[2].trim(); const b = m[3].trim(); const how = m[4].toLowerCase();
+    const sep = how === 'underscore' ? '_' : how === 'space' ? '\\s+' : how === 'slash' ? '/' : '[-_]';
+    return { kind: 'split', column: col, targets: [a, b], separators: [sep] };
+  }
   // Normalize casing to lower/upper in <Column>
   m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
   if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
@@ -663,7 +670,7 @@ function previewForRuleCommand(descriptor, rows) {
     return { columns: baseCols, rows: out };
   }
 
-  // Split column into targets preview
+  // Split column into targets preview (supports delimiter, pattern, separators, auto-detect)
   if (descriptor.kind === 'split' && descriptor.column && Array.isArray(descriptor.targets)) {
     const src = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
     const targets = descriptor.targets;
@@ -671,7 +678,25 @@ function previewForRuleCommand(descriptor, rows) {
     const out = sampleRows.slice(0, 20).map((r) => {
       const x = clone(r);
       const text = String(x[src] ?? '');
-      const parts = text.split(/\s+/);
+      let parts = [];
+      if (descriptor.delimiter) {
+        parts = text.split(descriptor.delimiter);
+      } else if (descriptor.pattern) {
+        try { const rx = new RegExp(descriptor.pattern, descriptor.flags || ''); const m = text.match(rx); parts = m ? m.slice(1) : []; } catch {}
+      } else if (Array.isArray(descriptor.separators) && descriptor.separators.length) {
+        for (const sep of descriptor.separators) {
+          try { const rx = new RegExp(sep); const p = text.split(rx); if (p.length >= targets.length) { parts = p; break; } }
+          catch { const p = text.split(String(sep)); if (p.length >= targets.length) { parts = p; break; } }
+        }
+      }
+      if (!parts || parts.length === 0) {
+        const auto = text.trim().split(/[\/_\-\|,\s]+/).filter(Boolean);
+        if (auto.length) parts = auto;
+      }
+      if ((!parts || parts.length === 0 || parts.length < targets.length) && (/^\s*fy/i.test(text) || String(src).toLowerCase().includes('year'))) {
+        const nums = (text.match(/\d+/g) || []).map((n) => n.length === 2 ? n : n.slice(-2));
+        if (nums.length >= 2) parts = nums;
+      }
       for (let i = 0; i < targets.length; i++) x[targets[i]] = parts[i] ?? '';
       return x;
     });
@@ -923,6 +948,14 @@ async function generateRuleFromText(command, columns, accessToken) {
   const t = String(command || '').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
   // Title-case X and Y; trim whitespace
   let m = null;
+  // Split <col> into <a> and <b> using underscore/space/dash/hyphen/slash
+  m = t.match(/^\s*split\s+(.+?)\s+into\s+(.+?)\s*(?:[,/&+]\s*|\s+and\s+)\s*(.+?)\s+using\s+(underscore|space|dash|hyphen|slash)\s*$/i);
+  if (m) {
+    const src = resolveCol(m[1], null) || m[1].trim();
+    const a = m[2].trim(); const b = m[3].trim(); const how = m[4].toLowerCase();
+    const sep = how === 'underscore' ? '[_]+' : how === 'space' ? '\\s+' : how === 'slash' ? '/' : '[-_]+';
+    return { name: `Split ${src} into ${a}/${b}`, definition: { transforms: [ { name: 'split', column: src, separators: [sep], targets: [a,b] } ], checks: [], meta: { category: 'parsing' } } };
+  }
   m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
   if (m) {
     const cols = m[1].split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
