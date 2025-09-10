@@ -615,13 +615,17 @@ router.post('/:id/clean', async (req, res) => {
 
     // Filter/Cleansing pass: drop/flag rows matching conditions
     const filterRules = (rules || []).filter((r) => Array.isArray(r.definition?.checks) && r.definition.checks.length);
+    // Column resolver for conditions (case-insensitive)
+    const sampleEvalCols = Object.keys((rows?.[0]?.record) || {});
+    const lowerToActualEval = new Map(sampleEvalCols.map((c) => [String(c).toLowerCase(), c]));
     const evalCondition = (row, cond) => {
       // Very small parser: "Column OP Value" with OP in [==,!=,>,>=,<,<=]
       // Value may be number or quoted string
       try {
         const m = String(cond).match(/^\s*([^<>!=]+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$/);
         if (!m) return false;
-        const col = m[1].trim();
+        const colInput = m[1].trim();
+        const col = lowerToActualEval.get(colInput.toLowerCase()) || colInput;
         const op = m[2];
         let rhsRaw = m[3].trim();
         let rhs;
@@ -671,19 +675,26 @@ router.post('/:id/clean', async (req, res) => {
     // Cache for referential integrity checks
     const refCache = new Map(); // key: `${domainId}::${column}` => Set of values
     for (const r of filterRules) {
+      const rTransforms = Array.isArray(r.definition?.transforms) ? r.definition.transforms : [];
       for (const chk of r.definition.checks || []) {
         if (chk.name === 'drop_if' && chk.condition) {
-          for (const row of rows || []) if (evalCondition(row, chk.condition)) filterDeletes.add(row.key_hash);
+          for (const row of rows || []) {
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const vRow = { ...row, record: vRec };
+            if (evalCondition(vRow, chk.condition)) filterDeletes.add(row.key_hash);
+          }
         }
         if (chk.name === 'drop_if_null' && Array.isArray(chk.columns)) {
           for (const row of rows || []) {
-            if (chk.columns.some((c) => row.record?.[c] == null || row.record[c] === '')) filterDeletes.add(row.key_hash);
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            if (chk.columns.some((c) => vRec?.[c] == null || vRec[c] === '')) filterDeletes.add(row.key_hash);
           }
         }
         if (chk.name === 'require_columns' && Array.isArray(chk.columns)) {
           const action = (chk.action || 'drop').toLowerCase(); // 'drop' | 'flag'
           for (const row of rows || []) {
-            const missing = chk.columns.some((c) => row.record?.[c] == null || row.record[c] === '');
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const missing = chk.columns.some((c) => vRec?.[c] == null || vRec[c] === '');
             if (missing) {
               if (action === 'drop') filterDeletes.add(row.key_hash);
               else flaggedCount++;
@@ -693,7 +704,8 @@ router.post('/:id/clean', async (req, res) => {
         if (chk.name === 'drop_if_missing_pct_gt') {
           const thr = Number(chk.threshold || 50);
           for (const row of rows || []) {
-            const vals = Object.values(row.record || {});
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const vals = Object.values(vRec || {});
             if (!vals.length) continue;
             const missing = vals.reduce((acc, v) => acc + ((v == null || v === '') ? 1 : 0), 0);
             const pct = (missing / vals.length) * 100;
@@ -704,7 +716,8 @@ router.post('/:id/clean', async (req, res) => {
           const action = (chk.action || 'flag').toLowerCase();
           const re = /^(?=.{1,254}$)(?=.{1,64}@)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
           for (const row of rows || []) {
-            const ok = re.test(String(row.record?.[chk.column] ?? ''));
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const ok = re.test(String(vRec?.[chk.column] ?? ''));
             if (!ok) {
               if (action === 'drop') filterDeletes.add(row.key_hash);
               else flaggedCount++;
@@ -715,7 +728,8 @@ router.post('/:id/clean', async (req, res) => {
           const min = chk.min !== undefined ? Number(chk.min) : null;
           const max = chk.max !== undefined ? Number(chk.max) : null;
           for (const row of rows || []) {
-            const v = Number(row.record?.[chk.column]);
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const v = Number(vRec?.[chk.column]);
             if (Number.isNaN(v)) continue;
             if ((min != null && v < min) || (max != null && v > max)) filterDeletes.add(row.key_hash);
           }
@@ -723,7 +737,8 @@ router.post('/:id/clean', async (req, res) => {
         if (chk.name === 'drop_if_not_in' && chk.column && Array.isArray(chk.values)) {
           const allow = new Set(chk.values.map((x) => String(x)));
           for (const row of rows || []) {
-            const v = row.record?.[chk.column];
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const v = vRec?.[chk.column];
             if (!allow.has(String(v))) filterDeletes.add(row.key_hash);
           }
         }
@@ -731,14 +746,17 @@ router.post('/:id/clean', async (req, res) => {
           let re = null; try { re = new RegExp(chk.pattern, chk.flags || ''); } catch {}
           if (re) {
             for (const row of rows || []) {
-              const v = String(row.record?.[chk.column] ?? '');
+              const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+              const v = String(vRec?.[chk.column] ?? '');
               if (re.test(v)) filterDeletes.add(row.key_hash);
             }
           }
         }
         if (chk.name === 'drop_if_all' && Array.isArray(chk.conditions) && chk.conditions.length) {
           for (const row of rows || []) {
-            const allTrue = chk.conditions.every((cond) => evalCondition(row, cond));
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const vRow = { ...row, record: vRec };
+            const allTrue = chk.conditions.every((cond) => evalCondition(vRow, cond));
             if (allTrue) filterDeletes.add(row.key_hash);
           }
         }
@@ -746,37 +764,42 @@ router.post('/:id/clean', async (req, res) => {
           const from = chk.from != null ? parseDate(chk.from) : null;
           const to = chk.to != null ? parseDate(chk.to) : null;
           for (const row of rows || []) {
-            const d = parseDate(row.record?.[chk.column]);
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const d = parseDate(vRec?.[chk.column]);
             if (!d) continue;
             if ((from && d < from) || (to && d > to)) filterDeletes.add(row.key_hash);
           }
         }
         if (chk.name === 'drop_if_start_after_end' && chk.start && chk.end) {
           for (const row of rows || []) {
-            const a = parseDate(row.record?.[chk.start]);
-            const b = parseDate(row.record?.[chk.end]);
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const a = parseDate(vRec?.[chk.start]);
+            const b = parseDate(vRec?.[chk.end]);
             if (a && b && a > b) filterDeletes.add(row.key_hash);
           }
         }
         if (chk.name === 'drop_if_relation' && chk.left && chk.op && chk.right != null) {
           const op = chk.op;
           for (const row of rows || []) {
-            const lv = (typeof chk.left === 'string' && row.record?.[chk.left] !== undefined) ? row.record[chk.left] : chk.left;
-            const rv = (typeof chk.right === 'string' && row.record?.[chk.right] !== undefined) ? row.record[chk.right] : chk.right;
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const leftKey = typeof chk.left === 'string' ? (lowerToActualEval.get(String(chk.left).toLowerCase()) || chk.left) : chk.left;
+            const rightKey = typeof chk.right === 'string' ? (lowerToActualEval.get(String(chk.right).toLowerCase()) || chk.right) : chk.right;
+            const lv = (typeof leftKey === 'string' && vRec?.[leftKey] !== undefined) ? vRec[leftKey] : leftKey;
+            const rv = (typeof rightKey === 'string' && vRec?.[rightKey] !== undefined) ? vRec[rightKey] : rightKey;
             const A = typeof lv === 'number' ? lv : Number(lv);
             const B = typeof rv === 'number' ? rv : Number(rv);
             const L = (typeof lv === 'number' || typeof rv === 'number') ? (isNaN(A) ? lv : A) : String(lv ?? '');
             const R = (typeof lv === 'number' || typeof rv === 'number') ? (isNaN(B) ? rv : B) : String(rv ?? '');
-            let bad = false;
+            let truth = false;
             switch (op) {
-              case '==': bad = !(L == R); break;
-              case '!=': bad = !(L != R); break;
-              case '>': bad = !(L > R); break;
-              case '>=': bad = !(L >= R); break;
-              case '<': bad = !(L < R); break;
-              case '<=': bad = !(L <= R); break;
+              case '==': truth = (L == R); break;
+              case '!=': truth = (L != R); break;
+              case '>': truth = (L > R); break;
+              case '>=': truth = (L >= R); break;
+              case '<': truth = (L < R); break;
+              case '<=': truth = (L <= R); break;
             }
-            if (bad) filterDeletes.add(row.key_hash);
+            if (truth) filterDeletes.add(row.key_hash);
           }
         }
         if (chk.name === 'exists_in_domain' && chk.column && (chk.target_domain_id || chk.target_domain) && chk.target_column) {
@@ -808,7 +831,8 @@ router.post('/:id/clean', async (req, res) => {
           }
           const action = (chk.action || 'flag').toLowerCase();
           for (const row of rows || []) {
-            const v = row.record?.[chk.column];
+            const vRec = rTransforms.length ? applyTransforms(row.record, rTransforms) : row.record;
+            const v = vRec?.[chk.column];
             if (!allowed.has(String(v))) {
               if (action === 'drop') filterDeletes.add(row.key_hash);
               else flaggedCount++;
@@ -889,7 +913,22 @@ router.post('/:id/clean', async (req, res) => {
       }
     }
 
-    // Apply transforms only to rows that remain after dedup
+    // Delete rows marked by filter checks (batch by chunks)
+    if (filterDeletes.size) {
+      const keys = Array.from(filterDeletes);
+      const chunkSize = 1000;
+      for (let i = 0; i < keys.length; i += chunkSize) {
+        const chunk = keys.slice(i, i + chunkSize);
+        const { error: delErr } = await supabaseAdmin
+          .from('domain_data')
+          .delete()
+          .eq('domain_id', id)
+          .in('key_hash', chunk);
+        if (delErr) return res.status(400).json({ error: `filter delete failed: ${delErr.message}` });
+      }
+    }
+
+    // Apply transforms only to rows that remain after deletions/dedup
     for (const row of rows || []) {
       if (toDelete.has(row.key_hash)) continue;
       const newRec = applyTransforms(row.record, transforms);

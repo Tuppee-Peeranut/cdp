@@ -410,8 +410,31 @@ function answerLocalQuestion(prompt, batch) {
 function detectRuleCommand(text) {
   if (!text) return null;
   const t = String(text).replace(/[“”]/g, '"').replace(/[‘’]/g, "'").trim();
+  let m = null;
+  // Normalize casing to lower/upper in <Column>
+  m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'upper', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Replace "x" with "y" in <Column>
+  m = t.match(/^\s*replace\s+"(.+?)"\s+with\s+"(.+?)"\s+in\s+(.+)\s*$/i);
+  if (m) return { kind: 'replace_in', from: m[1], to: m[2], columns: m[3].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Map Gender values so A -> B and C -> D
+  m = t.match(/^\s*map\s+([A-Za-z0-9_ .-]+)\s+values\s+so\s+(.+)$/i);
+  if (m) {
+    const col = m[1].trim();
+    const pairs = {};
+    (m[2] || '').split(/\s*(?:,|;|\s+and\s+)\s*/i).forEach(part => {
+      const pm = part.match(/^(.+?)\s*(?:→|->)\s*(.+)$/);
+      if (pm) pairs[pm[1].trim()] = pm[2].trim();
+    });
+    if (Object.keys(pairs).length) return { kind: 'map_values', column: col, mapping: pairs };
+  }
+  // Relation filter: Filter out rows where A OP B
+  m = t.match(/^\s*filter\s+out\s+rows\s+where\s+([A-Za-z0-9_ .-]+)\s*(==|!=|>=|<=|>|<)\s*([A-Za-z0-9_ .-]+)\s*$/i);
+  if (m) return { kind: 'filter_relation', left: m[1].trim(), op: m[2], right: m[3].trim() };
   // Title-case X and Y; trim whitespace
-  let m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
+  m = t.match(/^\s*title-?case\s+(.+?)\s*(?:;|\s+and\s+)\s*trim\s+whitespace\.?\s*$/i);
   if (m) {
     // columns separated by 'and' or ','
     const raw = m[1].trim();
@@ -678,6 +701,55 @@ function previewForRuleCommand(descriptor, rows) {
     }
     return { columns: baseCols, rows: out };
   }
+  // Normalize casing in columns preview
+  if (descriptor.kind === 'normalize_case_in' && Array.isArray(descriptor.columns)) {
+    const mode = descriptor.mode === 'upper' ? 'upper' : 'lower';
+    const cols = descriptor.columns.map((c)=> byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r)=>{
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = mode==='upper' ? x[c].toUpperCase() : x[c].toLowerCase();
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Replace in columns preview
+  if (descriptor.kind === 'replace_in' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c)=> byLower.get(c.toLowerCase()) || c);
+    const re = new RegExp(descriptor.from, 'g');
+    const out = sampleRows.slice(0, 20).map((r)=>{
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = x[c].replace(re, descriptor.to);
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Map values preview
+  if (descriptor.kind === 'map_values' && descriptor.column && descriptor.mapping) {
+    const col = byLower.get(descriptor.column.toLowerCase()) || descriptor.column;
+    const mp = descriptor.mapping;
+    const out = sampleRows.slice(0, 20).map((r)=>{ const x=clone(r); const v=x[col]; if (v!=null && mp[v]!==undefined) x[col]=mp[v]; return x; });
+    return { columns: baseCols, rows: out };
+  }
+  // Filter relation preview (drop rows matching A OP B)
+  if (descriptor.kind === 'filter_relation' && descriptor.left && descriptor.op && descriptor.right) {
+    const Lc = byLower.get(descriptor.left.toLowerCase()) || descriptor.left;
+    const Rc = byLower.get(descriptor.right.toLowerCase()) || descriptor.right;
+    const out = [];
+    for (const r of sampleRows) {
+      const lv = r[Lc], rv = r[Rc];
+      const A = typeof lv==='number' ? lv : Number(lv);
+      const B = typeof rv==='number' ? rv : Number(rv);
+      const L = (!Number.isNaN(A) ? A : String(lv ?? ''));
+      const R = (!Number.isNaN(B) ? B : String(rv ?? ''));
+      let cond=false; switch (descriptor.op) {
+        case '==': cond = (L==R); break; case '!=': cond = (L!=R); break;
+        case '>': cond = (L>R); break; case '>=': cond = (L>=R); break;
+        case '<': cond = (L<R); break; case '<=': cond = (L<=R); break;
+      }
+      if (!cond) out.push(r); if (out.length>=20) break;
+    }
+    return { columns: baseCols, rows: out };
+  }
 
   // Filter: required columns
   if (descriptor.kind === 'filter_required' && Array.isArray(descriptor.columns)) {
@@ -917,6 +989,17 @@ async function generateRuleFromText(command, columns, accessToken) {
       { name: 'drop_if_all', conditions: ["Business == 'Dealer'", "Remark == 'Discounted'"] }
     ], meta: { category: 'filter' } } };
   }
+  // Normalize casing in specific columns (lower/upper) e.g. "Normalize casing to lowercase in Business, Finished"
+  m = t.match(/^(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsSel = m[1].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    return { name: `Normalize to lowercase in ${colsSel.join(', ')}`, definition: { transforms: [{ name: 'lowercase', columns: colsSel }], checks: [], meta: { category: 'normalization' } } };
+  }
+  m = t.match(/^(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsSel = m[1].split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+    return { name: `Normalize to uppercase in ${colsSel.join(', ')}`, definition: { transforms: [{ name: 'uppercase', columns: colsSel }], checks: [], meta: { category: 'normalization' } } };
+  }
   // Dedup by X keep latest/first
   m = t.match(/dedup(?:e|licate)?\s+by\s+([^,]+?)(?:\s+keep\s+(first|latest|last))?$/i);
   if (m) {
@@ -926,10 +1009,10 @@ async function generateRuleFromText(command, columns, accessToken) {
   }
   // Normalize casing
   if (/normalize\s+(?:case|casing).*lower/i.test(t)) {
-    return { name: 'Normalize casing to lower', definition: { transforms: [{ name: 'lowercase', columns: cols.length ? cols : ['*'] }], checks: [], meta: { category: 'normalization' } } };
+    return { name: 'Normalize casing to lower', definition: { transforms: [{ name: 'lowercase', columns: ['*'] }], checks: [], meta: { category: 'normalization' } } };
   }
   if (/normalize\s+(?:case|casing).*upper/i.test(t)) {
-    return { name: 'Normalize casing to upper', definition: { transforms: [{ name: 'uppercase', columns: cols.length ? cols : ['*'] }], checks: [], meta: { category: 'normalization' } } };
+    return { name: 'Normalize casing to upper', definition: { transforms: [{ name: 'uppercase', columns: ['*'] }], checks: [], meta: { category: 'normalization' } } };
   }
   // Standardize phone numbers
   m = t.match(/standardize\s+phone\s+numbers?(?:\s+in\s+(.+))?/i);
