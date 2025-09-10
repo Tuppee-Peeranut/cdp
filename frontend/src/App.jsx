@@ -423,6 +423,11 @@ function detectRuleCommand(text) {
   if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
   m = t.match(/^\s*(normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
   if (m) return { kind: 'normalize_case_in', mode: 'upper', columns: m[2].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  // Simple forms: lowercase/uppercase in <Column>
+  m = t.match(/^\s*(?:lower\s*-?\s*case|lowercase)\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'lower', columns: (m[1]||'').split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
+  m = t.match(/^\s*(?:upper\s*-?\s*case|uppercase)\s+in\s+(.+)$/i);
+  if (m) return { kind: 'normalize_case_in', mode: 'upper', columns: (m[1]||'').split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
   // Replace "x" with "y" in <Column>
   m = t.match(/^\s*replace\s+"(.+?)"\s+with\s+"(.+?)"\s+in\s+(.+)\s*$/i);
   if (m) return { kind: 'replace_in', from: m[1], to: m[2], columns: m[3].split(/\s*,\s*/).map(s=>s.trim()).filter(Boolean) };
@@ -448,6 +453,13 @@ function detectRuleCommand(text) {
     const cols = raw.split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
     return { kind: 'title_trim', columns: cols };
   }
+  // Title-case columns (no trim)
+  m = t.match(/^\s*title-?case\s+(.+?)\s*$/i);
+  if (m) {
+    const raw = m[1].trim();
+    const cols = raw.split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return { kind: 'titlecase_in', columns: cols };
+  }
   // Split Age into AgeFrom/AgeTo (support 60+)
   if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
     return { kind: 'split_age' };
@@ -464,8 +476,9 @@ function detectRuleCommand(text) {
   if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
     return { kind: 'normalize_nulls' };
   }
-  // Drop rows missing A, B, or C
-  m = t.match(/^\s*drop\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  // Drop/Remove/Delete rows missing A, B, or C
+  m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (!m) m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+with\s+missing\s+(.+?)\.?\s*$/i);
   if (m) {
     const cols = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
     return { kind: 'filter_required', columns: cols };
@@ -588,6 +601,16 @@ function previewForRuleCommand(descriptor, rows) {
       for (const c of cols) {
         if (typeof x[c] === 'string') x[c] = titleCase(x[c].trim());
       }
+      return x;
+    });
+    return { columns: baseCols, rows: out };
+  }
+  // Title-case in columns (no trim)
+  if (descriptor.kind === 'titlecase_in' && Array.isArray(descriptor.columns)) {
+    const cols = descriptor.columns.map((c) => byLower.get(c.toLowerCase()) || c);
+    const out = sampleRows.slice(0, 20).map((r) => {
+      const x = clone(r);
+      for (const c of cols) if (typeof x[c] === 'string') x[c] = titleCase(x[c]);
       return x;
     });
     return { columns: baseCols, rows: out };
@@ -964,6 +987,15 @@ async function generateRuleFromText(command, columns, accessToken) {
       definition: { transforms: [{ name: 'trim', columns: cols }, { name: 'titlecase', columns: cols }], checks: [], meta: { category: 'standardization' } }
     };
   }
+  // Title-case columns (no trim)
+  m = t.match(/^\s*title-?case\s+(.+?)\s*$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*(?:,|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
+    return {
+      name: `Titlecase ${colsList.join(', ')}`,
+      definition: { transforms: [{ name: 'titlecase', columns: colsList }], checks: [], meta: { category: 'standardization' } }
+    };
+  }
   // Split Age into AgeFrom/AgeTo
   if (/^\s*split\s+age\s+into\s+agefrom\s*\/\s*ageto/i.test(t)) {
     return {
@@ -992,8 +1024,20 @@ async function generateRuleFromText(command, columns, accessToken) {
   if (/normalize\s+.*(empty|null|n\/a)/i.test(t)) {
     return { name: 'Normalize common empties to null', definition: { transforms: [{ name: 'normalize_nulls' }], checks: [], meta: { category: 'normalization' } } };
   }
-  // Drop rows missing A, B, or C
-  m = t.match(/^\s*drop\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  // Normalize casing to lower/upper in columns
+  m = t.match(/^\s*(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?lower(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*,\s*/).map((s)=>s.trim()).filter(Boolean);
+    return { name: `Lowercase ${colsList.join(', ')}`, definition: { transforms: [{ name: 'lowercase', columns: colsList }], checks: [], meta: { category: 'standardization' } } };
+  }
+  m = t.match(/^\s*(?:normalize|standardize)\s+(?:case|casing)\s+(?:to\s+)?upper(?:\s*case)?\s+in\s+(.+)$/i);
+  if (m) {
+    const colsList = m[1].split(/\s*,\s*/).map((s)=>s.trim()).filter(Boolean);
+    return { name: `Uppercase ${colsList.join(', ')}`, definition: { transforms: [{ name: 'uppercase', columns: colsList }], checks: [], meta: { category: 'standardization' } } };
+  }
+  // Drop/Remove/Delete rows missing A, B, or C
+  m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+missing\s+(.+?)\.?\s*$/i);
+  if (!m) m = t.match(/^\s*(?:drop|remove|delete)\s+rows\s+with\s+missing\s+(.+?)\.?\s*$/i);
   if (m) {
     const colsList = m[1].split(/\s*(?:,|\bor\b|\band\b)\s*/i).map((s) => s.trim()).filter(Boolean);
     return { name: `Drop rows missing ${colsList.join(', ')}`, definition: { transforms: [], checks: [{ name: 'require_columns', columns: colsList, action: 'drop' }], meta: { category: 'completeness' } } };
@@ -2104,7 +2148,7 @@ function RulesPanel({ domainId, onClose }) {
   };
   return (
     <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-end" onClick={onClose}>
-      <div className="bg-white h-full w-[420px] border-l" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white h-full w-[420px] border-l flex flex-col overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b flex items-center justify-between"><div className="font-medium">Rules</div><button onClick={onClose}>✕</button></div>
         {loading ? (
           <div className="p-4 text-neutral-500">Loading…</div>

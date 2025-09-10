@@ -23,3 +23,4 @@ FY24/25,05_August,Grand,MODEL_DUP,PE,Dup Customer,Private,Dealer A,ok,1,12000,Ge
 FY24/25,06_September,Grand,MODEL_DUP,PE,Dup Customer,Private,Dealer A,ok-later,1,13000,General customer,Education,Female,31-40
 FY24/25,07_October,Grand,MODEL_ONLY_DUP,PE,Another Name,Private,Dealer A,ok,1,14000,General customer,Education,Male,31-40
 FY24/25,08_November,Grand,MODEL_ONLY_DUP,PE,Third Name,Private,Dealer A,ok,1,15000,General customer,Education,Female,31-40
+FY24/25,03_June,Grand,DC7X,PE,Trim whitespace Business , Private ,Dealer A,ok,1,12000,General customer,Education,Female,41-50
