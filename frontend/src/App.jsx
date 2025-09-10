@@ -180,12 +180,12 @@ const MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
  */
 async function parseWorkbook(file) {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: "array" });
+  const workbook = XLSX.read(data, { type: "array", cellDates: true });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false });
 
   // Clean raw rows (trim headers and string values), keep original shape
-  const rawRows = json.map((r) => {
+  let rawRows = json.map((r) => {
     const cleaned = {};
     for (const k of Object.keys(r)) {
       const key = String(k).trim();
@@ -195,6 +195,48 @@ async function parseWorkbook(file) {
     return cleaned;
   });
   const rawColumns = Object.keys(rawRows[0] || {});
+
+  // Normalize ONLY Excel serials to D/M/YYYY; keep original strings as-is for previews
+  try {
+    const EXCEL_MIN = 20000, EXCEL_MAX = 80000;
+    const isExcelSerial = (v) => typeof v === 'number' && isFinite(v) && v >= EXCEL_MIN && v <= EXCEL_MAX;
+    const isExcelSerialStr = (s) => {
+      if (s == null || s === '') return false; const n = Number(s);
+      return !Number.isNaN(n) && isExcelSerial(n);
+    };
+    const looksLikeDateHeader = (name = '') => /date|วันที่|invoice\s*date|create\s*date|regist\w*\s*at/i.test(String(name));
+    const toDMY = (d) => `${d.getUTCDate()}/${d.getUTCMonth() + 1}/${d.getUTCFullYear()}`; // D/M/YYYY (no zero pad)
+    const excelToDate = (n) => {
+      const base = Date.UTC(1899, 11, 30); // Excel epoch
+      const ms = base + n * 86400000;
+      return new Date(ms);
+    };
+    const cols = rawColumns;
+    const sample = rawRows.slice(0, 200);
+    const candidates = new Set();
+    for (const c of cols) {
+      let nonNull = 0, hits = 0;
+      for (const r of sample) {
+        const v = r?.[c]; if (v == null || v === '') continue; nonNull++;
+        if (isExcelSerial(v) || isExcelSerialStr(v)) hits++;
+      }
+      const ratio = nonNull ? (hits / nonNull) : 0;
+      if (looksLikeDateHeader(c) ? hits>0 : ratio >= 0.2) candidates.add(c);
+    }
+    if (candidates.size) {
+      rawRows = rawRows.map((row) => {
+        const out = { ...row };
+        for (const c of candidates) {
+          const v = out[c]; if (v == null || v === '') continue;
+          let d = null;
+          if (typeof v === 'number' && isExcelSerial(v)) d = excelToDate(v);
+          else if (isExcelSerialStr(v)) d = excelToDate(Number(v));
+          if (d && !isNaN(d.getTime())) out[c] = toDMY(d);
+        }
+        return out;
+      });
+    }
+  } catch {}
 
   /** @type {BatchRow[]} */
   const rows = rawRows.map((norm) => {

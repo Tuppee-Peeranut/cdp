@@ -9,6 +9,66 @@ import { auditLog } from './auth/superAdmin.js';
 const router = express.Router();
 router.use(authorize(['admin','user','super_admin']));
 
+// Helpers for robust date handling (Excel serials, DD/MM/YYYY, etc.)
+const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30); // Excel serial 0
+const DAY_MS = 24 * 60 * 60 * 1000;
+const isExcelDateNumber = (v) => typeof v === 'number' && isFinite(v) && v >= 20000 && v <= 80000;
+const excelSerialToDate = (n) => new Date(EXCEL_EPOCH_MS + Math.round(n * DAY_MS));
+const excelSerialToDateTime = (n) => new Date(EXCEL_EPOCH_MS + n * DAY_MS);
+const pad2 = (n) => String(n).padStart(2, '0');
+const toISODate = (d) => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth()+1)}-${pad2(d.getUTCDate())}`;
+const toISODateTime = (d) => `${toISODate(d)}T${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`;
+const toDMY = (d) => `${d.getUTCDate()}/${d.getUTCMonth() + 1}/${d.getUTCFullYear()}`; // D/M/YYYY (no zero pad)
+const looksLikeDateHeader = (name = '') => /date|วันที่|invoice\s*date|create\s*date|regist\w*\s*at/i.test(String(name));
+// Parse common date strings to Date (no timezone surprises; interpret as local then to UTC components)
+function parseFlexibleDateToDate(val) {
+  if (val == null || val === '') return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number' && isExcelDateNumber(val)) return excelSerialToDateTime(val);
+  const s = String(val).trim();
+  if (!s) return null;
+  // ISO
+  const iso = Date.parse(s);
+  if (!Number.isNaN(iso)) return new Date(iso);
+  // DD/MM/YYYY or DD-MM-YYYY
+  let m = s.match(/^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\s*$/);
+  if (m) {
+    let [ , d, mo, y ] = m;
+    const year = y.length === 2 ? (Number(y) + 2000) : Number(y);
+    const day = Number(d);
+    const month = Number(mo);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const dt = new Date(Date.UTC(year, month - 1, day));
+      if (!isNaN(dt.getTime())) return dt;
+    }
+  }
+  // MM/DD/YYYY (fallback if looks US)
+  m = s.match(/^\s*(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\s*$/);
+  if (m) {
+    let [ , mo, d, y ] = m;
+    const year = y.length === 2 ? (Number(y) + 2000) : Number(y);
+    const day = Number(d);
+    const month = Number(mo);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const dt = new Date(Date.UTC(year, month - 1, day));
+      if (!isNaN(dt.getTime())) return dt;
+    }
+  }
+  // DD MMM YYYY (e.g., 01 Jan 2024)
+  m = s.match(/^\s*(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{2,4})\s*$/);
+  if (m) {
+    const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+    const day = Number(m[1]);
+    const mi = months.indexOf(m[2].slice(0,3).toLowerCase());
+    const year = m[3].length === 2 ? (Number(m[3]) + 2000) : Number(m[3]);
+    if (mi >= 0 && day >= 1 && day <= 31) {
+      const dt = new Date(Date.UTC(year, mi, day));
+      if (!isNaN(dt.getTime())) return dt;
+    }
+  }
+  return null;
+}
+
 // List domains for current tenant
 router.get('/', async (req, res) => {
   const tenantId = await resolveTenantId(req);
@@ -515,11 +575,18 @@ router.post('/:id/clean', async (req, res) => {
           const col = def.column;
           const fmt = (def.format || 'ISO').toUpperCase();
           if (col && out[col] != null) {
-            const d = new Date(out[col]);
-            if (!isNaN(d.getTime())) {
-              if (fmt === 'ISO') out[col] = d.toISOString();
-              else if (fmt === 'YYYY-MM-DD' || fmt === 'DATE_ONLY') out[col] = d.toISOString().slice(0,10);
-              else out[col] = d.toISOString();
+            let d = null;
+            const v = out[col];
+            if (typeof v === 'number' && isExcelDateNumber(v)) d = excelSerialToDateTime(v);
+            else if (typeof v === 'string') {
+              const num = Number(v);
+              if (!Number.isNaN(num) && isExcelDateNumber(num)) d = excelSerialToDateTime(num);
+            }
+            else d = parseFlexibleDateToDate(v);
+            if (d && !isNaN(d.getTime())) {
+              if (fmt === 'YYYY-MM-DD' || fmt === 'DATE_ONLY') out[col] = toISODate(d);
+              else if (fmt === 'ISO_DATE_TIME' || fmt === 'ISO') out[col] = toISODateTime(d);
+              else out[col] = toISODate(d);
             }
           }
         }
@@ -1148,16 +1215,70 @@ router.post('/:id/ingest', async (req, res) => {
     const buf = Buffer.from(await blob.arrayBuffer());
 
     // Parse via xlsx; take first sheet
-    const wb = XLSX.read(buf, { type: 'buffer' });
+    const wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
     const sheetName = wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
+    let rows = XLSX.utils.sheet_to_json(ws, { defval: null, raw: false });
     // Derive columns from the actual header row (A1), not array indexes
     const a1 = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
     const headerRow = Array.isArray(a1?.[0]) ? a1[0] : [];
     const columns = (headerRow || [])
       .map((c) => String(c ?? '').trim())
       .filter((c) => c.length > 0);
+    const effectiveColumns = columns.length ? columns : Object.keys(rows[0] || {});
+
+    // Heuristic: detect and normalize date-like columns (Excel serials, DD/MM/YYYY, etc.)
+    try {
+      const sample = rows.slice(0, 200);
+      const isDateString = (s) => {
+        if (s == null) return false;
+        const v = String(s).trim();
+        if (!v) return false;
+        if (!Number.isNaN(Date.parse(v))) return true; // ISO or broadly parseable
+        if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}$/.test(v)) return true; // DD/MM/YYYY or MM/DD/YYYY
+        if (/^\d{1,2}\s+[A-Za-z]{3,}\s+\d{2,4}$/.test(v)) return true; // 01 Jan 2024
+        return false;
+      };
+      const candidate = new Set();
+      for (const col of effectiveColumns) {
+        let nonNull = 0, excelNum = 0, dateStr = 0;
+        for (const r of sample) {
+          const v = r?.[col];
+          if (v == null || v === '') continue;
+          nonNull++;
+          if (typeof v === 'number' && isExcelDateNumber(v)) excelNum++;
+          else if (typeof v === 'string') {
+            const num = Number(v);
+            if (!Number.isNaN(num) && isExcelDateNumber(num)) excelNum++;
+          }
+          else if (typeof v === 'string' && isDateString(v)) dateStr++;
+          else if (v instanceof Date && !isNaN(v.getTime())) dateStr++;
+        }
+        const ratio = nonNull ? (excelNum + dateStr) / nonNull : 0;
+        if (looksLikeDateHeader(col) ? (excelNum + dateStr) > 0 : ratio >= 0.2) candidate.add(col);
+      }
+      if (candidate.size > 0) {
+        rows = rows.map((r) => {
+          const out = { ...r };
+          for (const col of candidate) {
+            const v = out[col];
+            if (v == null || v === '') continue;
+            // Preserve original strings; only convert Excel serial numbers (or numeric strings) to a human date
+            if (typeof v === 'number' && isExcelDateNumber(v)) {
+              const d = excelSerialToDateTime(v);
+              if (!isNaN(d.getTime())) out[col] = toDMY(d);
+            } else if (typeof v === 'string') {
+              const num = Number(v);
+              if (!Number.isNaN(num) && isExcelDateNumber(num)) {
+                const d = excelSerialToDateTime(num);
+                if (!isNaN(d.getTime())) out[col] = toDMY(d);
+              }
+            }
+          }
+          return out;
+        });
+      }
+    } catch {}
     const rows_count = rows.length;
 
     // Insert domain_version
@@ -1167,7 +1288,7 @@ router.post('/:id/ingest', async (req, res) => {
       domain_id: id,
       file_path: storageKey,
       rows_count,
-      columns: columns.length ? columns : Object.keys(rows[0] || {}),
+      columns: effectiveColumns,
       import_summary: {
         sheet: isDelimitedText ? baseName : sheetName,
         file_name: fileName || null,
